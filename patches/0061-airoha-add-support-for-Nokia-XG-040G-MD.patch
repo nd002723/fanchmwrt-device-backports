@@ -1,0 +1,977 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Mikhail Zhilkin <csharper2005@gmail.com>
+Date: Sat, 23 May 2026 17:42:33 +0300
+Subject: [PATCH 61/76] airoha: add support for Nokia XG-040G-MD
+
+This commit adds support for Nokia XG-040G-MD XG-PON ONU.
+
+Specification
+-------------
+- SoC       : Airoha AN7581DT Quad-core ARM Cortex-A53 1.2 GHz
+- RAM       : 512 MiB DDR4 (ESMT M16U4G16256A-QLB)
+- Flash     : SPI-NAND 256 MiB (SkyHigh ML02G300WHI00)
+- WLAN      : -
+- Ethernet  : 1x 2500 Mbps (LAN1, Airoha EN8811HN)
+              3x 10/100/1000 Mbps (LAN2-LAN4, Airoha AN7581 SoC switch)
+- XG-PON    : ECONET EN7572AN, SLIC: MaxLinear PEF32001VSV12
+- USB       : 1x USB 3.0 (with power control via gpio)
+              1x USB 2.0 (with power control via gpio)
+- Buttons   : Reset
+- LEDs      : 1x Power (green, gpio-controlled)
+              1x WAN (green, gpio-controlled)
+              1x WAN (red, gpio-controlled)
+              4x LAN (green, gpio-controlled)
+              2x USB (green)
+- Power     : 12 VDC, 1 A
+
+Unsupported functions and limitations
+-------------------------------------
+1. XG-PON won't be available after installing OpenWrt.
+
+Installation (stock layout, UART)
+---------------------------------
+1. Attach UART and run picocom:
+   picocom -b 115200 --send-cmd "sb -vv" /dev/ttyUSB0
+2. Interrupt boot process by pressing Enter key to enter u-boot
+   Username: telecomadmin
+   Password: nE7jA%5m
+3. Start download firmware via ymodem protocol (via UART):
+   loady 0x85000000
+4. Press Ctrl + A then Ctrl + S in the picocom terminal (if you are using
+   a different terminal, please refer to the documentation) to start
+   upload OpenWrt initramfs image using ymodem protocol. Enter local path
+   to the OpenWrt initramfs image and press Enter.
+5. Load OpenWrt initramfs image from the memory:
+   bootm 0x85000000
+5. Sysupgrade with OpenWrt sysupgrade image
+
+Alternative for the p.3-4. Load and boot OpenWrt initramfs from tftp IP
+192.168.1.254:
+   tftpboot 0x85000000 192.168.1.254:openwrt-initramfs-uImage.itb
+   bootm 0x85000000
+I was unable to download the file without errors, the bootloader network
+driver is very unstable. Perhaps you will be more fortunate.
+
+Backup and installation (stock layout, without UART)
+----------------------------------------------------
+1. Unplug Fiber
+2. Make ONU Reset
+3. Navigate: http://192.168.1.1
+   Username: CMCCAdmin
+   Password: aDm8H%MdA
+4. Go to Apps -> Home Storage -> FTP and check Enable FTP
+5. Go to Apps -> Home Storage -> SAMBA Sharing and check Enable Samba
+6. Visit the following URL to open Telnet:
+   http://192.168.1.1/system.cgi?telnet
+7. Telnet account login:
+   Username: user
+   Password: <see ONU label>
+8. Get root privileges:
+   su user_ftp
+   Password: <see ONU label>
+9. Copy 'squashfs-factory-kernel.bin', 'squashfs-factory-rootfs.bin' and
+   'OpenWrt.mtd2.u-boot-env.bin' (backup of 'u-boot-env' partition from
+   the another Nokia XG-040G-MD with OpenWrt installed)
+9. Attach USB flash drive and check the new dir in /mnt:
+   ls /mnt
+10. Change current dir to the flash drive (change D to your flash drive
+   label):
+   cd /mnt/D
+11. Make backup:
+   for i in 0 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16; \
+   do cat /dev/mtd$i | gzip -9 > mtd$i.bin.gz; done
+12. Check image sizes:
+   ls -l | awk '{if(NR>1) {$5=sprintf("0x%x", $5); print}}'
+13. Write images:
+   mtd_debug erase /dev/mtd0 0x60000 0x20000
+   mtd_debug write /dev/mtd0 0x60000 0x20000 OpenWrt.mtd2.u-boot-env.bin
+   mtd_debug erase /dev/mtd14 0x0 0x2880000
+   mtd_debug write /dev/mtd14 0x0 0x3e6cfc squashfs-factory-kernel.bin
+   mtd_debug erase /dev/mtd11 0x0 0x80e0000
+   mtd_debug write /dev/mtd11 0x0 0x440000 squashfs-factory-rootfs.bin
+   0x3e6cfc - size of your 'squashfs-factory-kernel.bin'
+   0x440000 - size of your 'squashfs-factory-rootfs.bin'
+14. Reboot:
+   reboot
+
+Recovery (stock layout)
+-----------------------
+The same as described in Installation (UART).
+
+Return to stock (stock layout)
+------------------------------
+1. Follow the steps 1-5 of the Installation (UART)
+2. Once in OpenWrt upload you backup to the /tmp dir of the router:
+   scp -O mtd16.bin.gz root@192.168.1.1:/tmp
+5. Connect to the router using ssh and install kmod-mtd-rw:
+   apk update && apk add kmod-mtd-rw
+   insmod mtd-rw i_want_a_brick=1
+6. Unlock bootloader:
+   mtd unlock bootloader
+7. Restore stock:
+   zcat /tmp/mtd16.bin.gz | mtd write - all_flash
+8. Reboot:
+   reboot
+
+Notes (OpenWrt U-Boot layout)
+-----------------------------
+1. Only devices with SkyHigh ML02G300WHI00 spi-nand are supported. Driver
+   for FudanMicro FM25G02B is absent in current U-Boot.
+2. A simple installation without serial console is also possible using a
+   fork of @dangowrt's UBI Installer
+Link: https://github.com/dangowrt/owrt-ubi-installer
+
+Installation / recovery (OpenWrt U-Boot layout)
+-----------------------------------------------
+1.  Make sure that you have 'bosa' and 'ri' partitions mtd backups before
+    you start
+2.  Place OpenWrt images on the tftp server (IP: 192.168.1.254):
+    openwrt-airoha-an7581-nokia_xg-040g-md-ubi-bl31-uboot.fip
+    openwrt-airoha-an7581-nokia_xg-040g-md-ubi-initramfs-recovery.itb
+    openwrt-airoha-an7581-nokia_xg-040g-md-ubi-preloader.bin
+3.  Attach serial console and start terminal with XMODEM support:
+    picocom -b 115200 --send-cmd "sx -vvX" /dev/ttyUSB0
+4.  Push reset button and power on the router
+5.  Press 'x', then 'Ctrl + A' and 'Ctrl + S'
+6.  Paste full path to the bl2 image:
+    'openwrt-airoha-an7581-nokia_xg-040g-md-ubi-preloader.bin'
+7.  Wait until the file is downloaded and the following prompt appears:
+    Press x to load BL31 + U-Boot FIP
+8.  Press 'x', then 'Ctrl + A' and 'Ctrl + S'
+9.  Paste full path to the fip image:
+    'openwrt-airoha-an7581-nokia_xg-040g-md-ubi-bl31-uboot.fip'
+10. Wait until the file is downloaded, u-boot will prepare ubi partition
+    automatically
+11. Wait for U-Boot menu
+12. Run 'Load BL31+U-Boot FIP via TFTP then write to NAND'
+13. Run 'Load BL2 preloader via TFTP then write to NAND'
+14. Run 'Boot system via TFTP'
+15. Once in OpenWrt perform standard sysupgrade
+16. Once in OpenWrt upload 'bosa' and 'ri' partitions mtd backups to the
+    /tmp dir using scp protocol
+17. Check ID of the UBI volumes:
+    ubinfo -d 0 -N bosa | grep "Volume ID"
+    ubinfo -d 0 -N ri | grep "Volume ID"
+18. Write backups according to the volume ID:
+    ubiupdatevol /dev/ubi0_2 /tmp/bosa.bin
+    ubiupdatevol /dev/ubi0_3 /tmp/ri.bin
+19. Reboot:
+    reboot
+
+Stock layout
+------------
++-------+------------+---------+---------+
+| mtd   | label      | start   | size    |
++-------+------------+---------+---------+
+| mtd0  | bootloader | 0       | 80000   |
+| mtd1  | romfile    | 80000   | 40000   |
+| mtd14 | nsb_master | c0000   | 2880000 |
+| mtd15 | nsb_slave  | 2940000 | 2880000 |
+| mtd6  | bosa       | 51c0000 | 40000   |
+| mtd7  | ri         | 5200000 | 40000   |
+| mtd8  | flag       | 5240000 | 40000   |
+| mtd9  | flagback   | 5280000 | 40000   |
+| mtd10 | config     | 52c0000 | a00000  |
+| mtd11 | data       | 5cc0000 | 80e0000 |
+| mtd12 | oopsfs     | dda0000 | 400000  |
+| mtd13 | log        | e1a0000 | a00000  |
++-------+------------+---------+---------+
+
+USB power control
+-----------------
+Disable (both ports):
+   echo disabled > /sys/devices/platform/usb-power/state
+Enable (both ports):
+   echo enabled > /sys/devices/platform/usb-power/state
+
+UART
+----
+A view from the back side of the PCB:
+   ------------------------
+   |       GND RX TX
+   |        X  X  X
+Connection parameters:
+115200, 8N1, 3.3V
+
+MAC addresses
+-------------
++---------+-------------------+-----------+
+|         | MAC               | Algorithm |
++---------+-------------------+-----------+
+| LAN     | 04:xx:xx:xx:xx:0d | label     |
+| WAN     | 04:xx:xx:xx:xx:0e | label + 1 |
++---------+-------------------+-----------+
+The LAN MAC (hex) was found in 'ri', 0x3e
+
+Signed-off-by: Mikhail Zhilkin <csharper2005@gmail.com>
+Link: https://github.com/openwrt/openwrt/pull/23569
+Signed-off-by: Hauke Mehrtens <hauke@hauke-m.de>
+---
+ .../uboot-envtools/files/airoha_an7581        |   6 +-
+ .../an7581/base-files/etc/board.d/02_network  |   5 +
+ .../an7581/base-files/lib/upgrade/platform.sh |  44 ++-
+ .../dts/an7581-nokia_xg-040g-md-common.dtsi   | 350 ++++++++++++++++++
+ .../dts/an7581-nokia_xg-040g-md-ubi.dts       |  84 +++++
+ .../airoha/dts/an7581-nokia_xg-040g-md.dts    | 152 ++++++++
+ target/linux/airoha/image/an7581.mk           |  46 +++
+ 7 files changed, 682 insertions(+), 5 deletions(-)
+ create mode 100644 target/linux/airoha/dts/an7581-nokia_xg-040g-md-common.dtsi
+ create mode 100644 target/linux/airoha/dts/an7581-nokia_xg-040g-md-ubi.dts
+ create mode 100644 target/linux/airoha/dts/an7581-nokia_xg-040g-md.dts
+
+diff --git a/package/boot/uboot-tools/uboot-envtools/files/airoha_an7581 b/package/boot/uboot-tools/uboot-envtools/files/airoha_an7581
+index 29e6c398868..c0a5c9fb444 100644
+--- a/package/boot/uboot-tools/uboot-envtools/files/airoha_an7581
++++ b/package/boot/uboot-tools/uboot-envtools/files/airoha_an7581
+@@ -12,9 +12,13 @@ touch /etc/config/ubootenv
+ board=$(board_name)
+ 
+ case "$board" in
+-gemtek,w1700k-ubi)
++gemtek,w1700k-ubi|\
++nokia,xg-040g-md-ubi)
+ 	ubootenv_add_ubi_default
+ 	;;
++nokia,xg-040g-md)
++	ubootenv_add_mtd "u-boot-env" "0x1c000" "0x4000" "0x4000"
++	;;
+ esac
+ 
+ config_load ubootenv
+diff --git a/target/linux/airoha/an7581/base-files/etc/board.d/02_network b/target/linux/airoha/an7581/base-files/etc/board.d/02_network
+index b6293658d9f..107ca370462 100644
+--- a/target/linux/airoha/an7581/base-files/etc/board.d/02_network
++++ b/target/linux/airoha/an7581/base-files/etc/board.d/02_network
+@@ -19,6 +19,11 @@ an7581_setup_interfaces()
+ 		;;
+ 	nokia,valyrian)
+ 		ucidef_set_interfaces_lan_wan "lan1 lan2 lan3 10g" "wan"
++		;;
++	nokia,xg-040g-md |\
++	nokia,xg-040g-md-ubi)
++		ucidef_set_interface_lan "lan1 lan2 lan3 lan4"
++		;;
+ 	*)
+ 		echo "Unsupported hardware. Network interfaces not initialized"
+ 		;;
+diff --git a/target/linux/airoha/an7581/base-files/lib/upgrade/platform.sh b/target/linux/airoha/an7581/base-files/lib/upgrade/platform.sh
+index 767f499faad..8584b84e0c6 100644
+--- a/target/linux/airoha/an7581/base-files/lib/upgrade/platform.sh
++++ b/target/linux/airoha/an7581/base-files/lib/upgrade/platform.sh
+@@ -1,11 +1,39 @@
+-REQUIRE_IMAGE_METADATA=1
+ RAMFS_COPY_BIN='fitblk fit_check_sign'
+ 
++REQUIRE_IMAGE_METADATA=1
++
++nokia_initial_setup()
++{
++	[ "$(rootfs_type)" = "tmpfs" ] || return 0
++
++	fw_setenv bootcmd "flash read 0xc0000 0x800000 0x85000000; bootm 0x85000000"
++}
++
++platform_check_image() {
++	local board=$(board_name)
++
++	[ "$#" -gt 1 ] && return 1
++
++	case "$board" in
++	nokia,xg-040g-md)
++		nand_do_platform_check "$board" "$1"
++		return $?
++		;;
++	nokia,xg-040g-md-ubi)
++		fit_check_image "$1"
++		return $?
++		;;
++	esac
++
++	return 0
++}
++
+ platform_do_upgrade() {
+ 	local board=$(board_name)
+ 
+ 	case "$board" in
+-		gemtek,w1700k-ubi)
++		gemtek,w1700k-ubi|\
++		nokia,xg-040g-md-ubi)
+ 			fit_do_upgrade "$1"
+ 			;;
+ 		*)
+@@ -14,6 +42,14 @@ platform_do_upgrade() {
+ 	esac
+ }
+ 
+-platform_check_image() {
+-	return 0
++platform_pre_upgrade() {
++	local board=$(board_name)
++
++	case "$board" in
++	nokia,xg-040g-md)
++		nokia_initial_setup
++		;;
++	*)
++		;;
++	esac
+ }
+diff --git a/target/linux/airoha/dts/an7581-nokia_xg-040g-md-common.dtsi b/target/linux/airoha/dts/an7581-nokia_xg-040g-md-common.dtsi
+new file mode 100644
+index 00000000000..aecddc73da9
+--- /dev/null
++++ b/target/linux/airoha/dts/an7581-nokia_xg-040g-md-common.dtsi
+@@ -0,0 +1,350 @@
++// SPDX-License-Identifier: GPL-2.0-only OR MIT
++
++/dts-v1/;
++#include <dt-bindings/leds/common.h>
++#include <dt-bindings/gpio/gpio.h>
++#include <dt-bindings/input/input.h>
++#include "an7581.dtsi"
++
++/ {
++	aliases {
++		label-mac-device = &gdm1;
++
++		led-boot = &led_power_green;
++		led-failsafe = &led_power_green;
++		led-running = &led_power_green;
++		led-upgrade = &led_power_green;
++
++		serial0 = &uart1;
++	};
++
++	chosen {
++		bootargs = "console=ttyS0,115200 earlycon";
++		stdout-path = "serial0:115200n8";
++		linux,usable-memory-range =
++			<0x0 0x80200000 0x0 0x1fe00000>;
++	};
++
++	gpio-keys {
++		compatible = "gpio-keys";
++
++		button-0 {
++			label = "reset";
++			linux,code = <KEY_RESTART>;
++			gpios = <&en7581_pinctrl 0 GPIO_ACTIVE_LOW>;
++			debounce-interval = <60>;
++		};
++	};
++
++	leds {
++		compatible = "gpio-leds";
++
++		led_power_green: led-0 {
++			color = <LED_COLOR_ID_GREEN>;
++			function = LED_FUNCTION_POWER;
++			gpios = <&en7581_pinctrl 17 GPIO_ACTIVE_LOW>;
++			panic-indicator;
++		};
++
++		led-1 {
++			color = <LED_COLOR_ID_GREEN>;
++			function = LED_FUNCTION_WAN;
++			gpios = <&en7581_pinctrl 18 GPIO_ACTIVE_LOW>;
++		};
++
++		led-2 {
++			color = <LED_COLOR_ID_RED>;
++			function = LED_FUNCTION_WAN;
++			gpios = <&en7581_pinctrl 19 GPIO_ACTIVE_LOW>;
++		};
++
++		led-3 {
++			color = <LED_COLOR_ID_GREEN>;
++			function = LED_FUNCTION_WAN_ONLINE;
++			gpios = <&en7581_pinctrl 20 GPIO_ACTIVE_LOW>;
++		};
++
++		led-4 {
++			color = <LED_COLOR_ID_GREEN>;
++			function = LED_FUNCTION_USB;
++			function-enumerator = <2>;
++			gpios = <&en7581_pinctrl 34 GPIO_ACTIVE_LOW>;
++			linux,default-trigger = "usbport";
++			trigger-sources = <&usb_port2>;
++		};
++
++		led-5 {
++			color = <LED_COLOR_ID_GREEN>;
++			function = LED_FUNCTION_USB;
++			function-enumerator = <1>;
++			gpios = <&en7581_pinctrl 35 GPIO_ACTIVE_LOW>;
++			linux,default-trigger = "usbport";
++			trigger-sources = <&usb_port1>;
++		};
++	};
++
++	memory@80000000 {
++		device_type = "memory";
++		reg = <0x0 0x80000000 0x0 0x20000000>;
++	};
++
++	reg_3p3v: regulator-3p3v {
++		compatible = "regulator-fixed";
++		regulator-always-on;
++		regulator-boot-on;
++		regulator-max-microvolt = <3300000>;
++		regulator-min-microvolt = <3300000>;
++		regulator-name = "fixed-3.3V";
++	};
++
++	reg_usb_5v: regulator-usb-5v {
++		compatible = "regulator-fixed";
++		enable-active-high;
++		gpio = <&en7581_pinctrl 24 GPIO_ACTIVE_HIGH>;
++		regulator-boot-on;
++		regulator-max-microvolt = <5000000>;
++		regulator-min-microvolt = <5000000>;
++		regulator-name = "usb-5v";
++	};
++
++	/*
++	 * Controls both USB ports at once
++	 */
++	usb-power {
++		compatible = "regulator-output";
++		vout-supply = <&reg_usb_5v>;
++	};
++};
++
++&en7581_pinctrl {
++	gpio-ranges = <&en7581_pinctrl 0 13 47>;
++
++	mdio_pins: mdio-pins {
++		mux {
++			function = "mdio";
++			groups = "mdio";
++		};
++
++		conf {
++			pins = "gpio2";
++			output-high;
++		};
++	};
++
++	gswp2_led0_pins: gswp2-led0-pins {
++		mux {
++			function = "phy2_led0";
++			pins = "gpio44";
++		};
++	};
++
++	gswp3_led0_pins: gswp3-led0-pins {
++		mux {
++			function = "phy3_led0";
++			pins = "gpio45";
++		};
++	};
++
++	gswp4_led0_pins: gswp4-led0-pins {
++		mux {
++			function = "phy4_led0";
++			pins = "gpio46";
++		};
++	};
++};
++
++&eth {
++	status = "okay";
++};
++
++&eth_pcs {
++	status = "okay";
++};
++
++&i2c0 {
++	status = "okay";
++};
++
++&mdio {
++	/* Airoha EN8811 2.5Gbps phy */
++	en8811: ethernet-phy@f {
++		compatible = "ethernet-phy-ieee802.3-c45";
++		reg = <0xf>;
++
++		reset-gpios = <&en7581_pinctrl 31 GPIO_ACTIVE_LOW>;
++		reset-assert-us = <10000>;
++		reset-deassert-us = <20000>;
++
++		leds {
++			#address-cells = <1>;
++			#size-cells = <0>;
++
++			led-0 {
++				reg = <0>;
++				color = <LED_COLOR_ID_GREEN>;
++				function = LED_FUNCTION_LAN;
++				function-enumerator = <1>;
++				default-state = "keep";
++			};
++		};
++	};
++};
++
++&npu {
++	status = "okay";
++};
++
++&pon_pcs {
++	status = "okay";
++};
++
++&snfi {
++	status = "okay";
++};
++
++/*
++ * SkyHigh ML02G300WHI00
++ */
++&spi_nand {
++	/*
++	 *  ECC must be aligned with bootloader to prevent read errors.
++	 *  Stock fw also uses NAND_ECC_NONE.
++	 */
++	nand-ecc-mode = "none";
++	nand-ecc-step-size = <2048>;
++	nand-ecc-strength = <0>;
++
++	partitions: partitions {
++		compatible = "fixed-partitions";
++		#address-cells = <1>;
++		#size-cells = <1>;
++	};
++};
++
++&gdm1 {
++	status = "okay";
++
++	nvmem-cell-names = "mac-address";
++	nvmem-cells = <&macaddr_factory_3e (0)>;
++};
++
++&switch {
++	status = "okay";
++
++	pinctrl-names = "default";
++	pinctrl-0 = <&mdio_pins>;
++};
++
++&gsw_port2 {
++	status = "okay";
++
++	label = "lan2";
++};
++
++&gsw_phy2 {
++	status = "okay";
++
++	interrupts = <2>;
++
++	pinctrl-names = "gbe-led";
++	pinctrl-0 = <&gswp2_led0_pins>;
++};
++
++&gsw_phy2_led0 {
++	status = "okay";
++
++	color = <LED_COLOR_ID_GREEN>;
++	function = LED_FUNCTION_LAN;
++	function-enumerator = <2>;
++	active-low;
++};
++
++&gsw_port3 {
++	status = "okay";
++
++	label = "lan3";
++};
++
++&gsw_phy3 {
++	status = "okay";
++
++	interrupts = <3>;
++
++	pinctrl-names = "gbe-led";
++	pinctrl-0 = <&gswp3_led0_pins>;
++};
++
++&gsw_phy3_led0 {
++	status = "okay";
++
++	color = <LED_COLOR_ID_GREEN>;
++	function = LED_FUNCTION_LAN;
++	function-enumerator = <3>;
++	active-low;
++};
++
++&gsw_port4 {
++	status = "okay";
++
++	label = "lan4";
++};
++
++&gsw_phy4 {
++	status = "okay";
++
++	interrupts = <4>;
++
++	pinctrl-names = "gbe-led";
++	pinctrl-0 = <&gswp4_led0_pins>;
++};
++
++&gsw_phy4_led0 {
++	status = "okay";
++
++	color = <LED_COLOR_ID_GREEN>;
++	function = LED_FUNCTION_LAN;
++	function-enumerator = <4>;
++	active-low;
++};
++
++&gdm4 {
++	status = "okay";
++
++	openwrt,netdev-name = "lan1";
++
++	phy-handle = <&en8811>;
++	phy-mode = "2500base-x";
++
++	nvmem-cell-names = "mac-address";
++	nvmem-cells = <&macaddr_factory_3e (0)>;
++};
++
++&usb0 {
++	status = "okay";
++
++	vusb33-supply = <&reg_3p3v>;
++
++	#address-cells = <1>;
++	#size-cells = <0>;
++
++	usb_port1: port@1 {
++		reg = <1>;
++		#trigger-source-cells = <0>;
++	};
++};
++
++&usb1 {
++	status = "okay";
++
++	mediatek,u3p-dis-msk = <0x1>;
++	phys = <&usb1_phy PHY_TYPE_USB2>;
++	vusb33-supply = <&reg_3p3v>;
++
++	#address-cells = <1>;
++	#size-cells = <0>;
++
++	usb_port2: port@1 {
++		reg = <1>;
++		#trigger-source-cells = <0>;
++	};
++};
+diff --git a/target/linux/airoha/dts/an7581-nokia_xg-040g-md-ubi.dts b/target/linux/airoha/dts/an7581-nokia_xg-040g-md-ubi.dts
+new file mode 100644
+index 00000000000..b61f613e7a0
+--- /dev/null
++++ b/target/linux/airoha/dts/an7581-nokia_xg-040g-md-ubi.dts
+@@ -0,0 +1,84 @@
++// SPDX-License-Identifier: GPL-2.0-only OR MIT
++
++#include "an7581-nokia_xg-040g-md-common.dtsi"
++
++/ {
++	model = "Nokia XG-040G-MD (UBI)";
++	compatible = "nokia,xg-040g-md-ubi", "airoha,an7581",
++		     "airoha,en7581";
++
++	chosen {
++		rootdisk = <&ubi_fit>;
++	};
++};
++
++&partitions {
++	partition@0_all {
++		label = "all_flash";
++		reg = <0x0 0x10000000>;
++		read-only;
++	};
++
++	partition@0 {
++		label = "bl2";
++		reg = <0x0 0x20000>;
++		read-only;
++	};
++
++	partition@20000 {
++		label = "ubi";
++		reg = <0x20000 0xffe0000>;
++		compatible = "linux,ubi";
++
++		volumes {
++			ubi-volume-bosa {
++				volname = "bosa";
++			};
++
++			ubi-volume-factory {
++				volname = "ri";
++
++				nvmem-layout {
++					compatible = "fixed-layout";
++
++					#address-cells = <1>;
++					#size-cells = <1>;
++
++					macaddr_factory_3e: macaddr@3e {
++						compatible = "mac-base";
++						reg = <0x3e 0x6>;
++						#nvmem-cell-cells = <1>;
++					};
++				};
++			};
++
++			ubi_fit: ubi-volume-fit {
++				volname = "fit";
++			};
++
++			ubi-volume-fip {
++				volname = "fip";
++			};
++
++			ubi_env: ubi-volume-ubootenv {
++				volname = "ubootenv";
++			};
++
++			ubi_env2: ubi-volume-ubootenv2 {
++				volname = "ubootenv2";
++			};
++		};
++	};
++};
++
++&ubi_env {
++	nvmem-layout {
++		compatible = "u-boot,env-redundant-bool-layout";
++	};
++};
++
++&ubi_env2 {
++	nvmem-layout {
++		compatible = "u-boot,env-redundant-bool-layout";
++	};
++};
+diff --git a/target/linux/airoha/dts/an7581-nokia_xg-040g-md.dts b/target/linux/airoha/dts/an7581-nokia_xg-040g-md.dts
+new file mode 100644
+index 00000000000..5676c78ab64
+--- /dev/null
++++ b/target/linux/airoha/dts/an7581-nokia_xg-040g-md.dts
+@@ -0,0 +1,152 @@
++// SPDX-License-Identifier: GPL-2.0-only OR MIT
++
++#include "an7581-nokia_xg-040g-md-common.dtsi"
++
++/ {
++	model = "Nokia XG-040G-MD";
++	compatible = "nokia,xg-040g-md", "airoha,an7581", "airoha,en7581";
++
++	virtual_flash {
++		compatible = "mtd-concat";
++		devices = <&ubi4 &ubi1 &ubi2 &ubi3 &ubi5 &ubi6>;
++
++		partitions {
++			compatible = "fixed-partitions";
++
++			#address-cells = <1>;
++			#size-cells = <1>;
++
++			partition@0 {
++				label = "ubi";
++				reg = <0x0 0x0>;
++			};
++		};
++	};
++};
++
++&partitions {
++	partition@0_all {
++		label = "all_flash";
++		reg = <0x0 0xeba0000>;
++		read-only;
++	};
++
++	partition@0 {
++		label = "bootloader";
++		reg = <0x0 0x80000>;
++		read-only;
++	};
++
++	partition@60000 {
++		label = "u-boot-env";
++		reg = <0x60000 0x20000>;
++	};
++
++	partition@80000 {
++		label = "romfile";
++		reg = <0x80000 0x40000>;
++		read-only;
++	};
++
++	partition@c0000 {
++		label = "nsb_1";
++		reg = <0xc0000 0x2880000>;
++
++		compatible = "fixed-partitions";
++		#address-cells = <1>;
++		#size-cells = <1>;
++
++		partition@0 {
++			label = "kernel";
++			reg = <0x0 0x800000>;
++		};
++
++		ubi1: partition@800000 {
++			label = "rootfs_1";
++			reg = <0x800000 0x2080000>;
++		};
++	};
++
++	ubi2: partition@2940000 {
++		label = "nsb_2";
++		reg = <0x2940000 0x2880000>;
++	};
++
++	partition@51c0000 {
++		label = "bosa";
++		reg = <0x51c0000 0x40000>;
++		read-only;
++	};
++
++	partition@5200000 {
++		label = "ri";
++		reg = <0x5200000 0x40000>;
++		read-only;
++
++		nvmem-layout {
++			compatible = "fixed-layout";
++
++			#address-cells = <1>;
++			#size-cells = <1>;
++
++			macaddr_factory_3e: macaddr@3e {
++				compatible = "mac-base";
++				reg = <0x3e 0x6>;
++				#nvmem-cell-cells = <1>;
++			};
++		};
++	};
++
++	partition@5240000 {
++		label = "flag";
++		reg = <0x5240000 0x40000>;
++		read-only;
++	};
++
++	partition@5280000 {
++		label = "flagback";
++		reg = <0x5280000 0x40000>;
++		read-only;
++	};
++
++	ubi3: partition@52c0000 {
++		label = "config";
++		reg = <0x52c0000 0xa00000>;
++	};
++
++	ubi4: partition@5cc0000 {
++		label = "data";
++		reg = <0x5cc0000 0x80e0000>;
++	};
++
++	ubi5: partition@dda0000 {
++		label = "oopsfs";
++		reg = <0xdda0000 0x400000>;
++	};
++
++	partition@e1a0000 {
++		label = "log";
++		reg = <0xe1a0000 0xa00000>;
++
++		compatible = "fixed-partitions";
++		#address-cells = <1>;
++		#size-cells = <1>;
++
++		ubi6: partition@0 {
++			label = "log_truncated";
++			reg = <0x0 0x9c0000>;
++		};
++
++		/*
++		 * Must be excluded from ubi. Otherwise the data
++		 * will be broken after U-Boot 'bootflag swap'
++		 * command call. This command writes bootflag at
++		 * 0xeb60000 (boot_flag_addr).
++		 */
++		partition@9c0000 {
++			label = "bootflag";
++			reg = <0x9c0000 0x40000>;
++			read-only;
++		};
++	};
++};
+diff --git a/target/linux/airoha/image/an7581.mk b/target/linux/airoha/image/an7581.mk
+index 31433db0a82..6bbbcd88b7a 100644
+--- a/target/linux/airoha/image/an7581.mk
++++ b/target/linux/airoha/image/an7581.mk
+@@ -104,3 +104,49 @@ define Device/nokia_valyrian
+   ARTIFACTS := preloader.bin bl31-uboot.fip
+ endef
+ TARGET_DEVICES += nokia_valyrian
++
++define Device/nokia_xg-040g-md-common
++  $(call Device/FitImageLzma)
++  DEVICE_VENDOR := Nokia
++  DEVICE_MODEL := XG-040G-MD
++  BLOCKSIZE := 128k
++  PAGESIZE := 2048
++  UBINIZE_OPTS := -E 5
++  DEVICE_PACKAGES := kmod-gpio-button-hotplug kmod-leds-gpio \
++	kmod-phy-airoha-en8811h kmod-regulator-userspace-consumer \
++	kmod-usb-ledtrig-usbport kmod-usb3
++endef
++
++define Device/nokia_xg-040g-md
++  $(call Device/nokia_xg-040g-md-common)
++  DEVICE_DTS := an7581-nokia_xg-040g-md
++  DEVICE_DTS_CONFIG := config@1
++  IMAGE_SIZE := 131968k
++  KERNEL_SIZE := 8192k
++  IMAGES += factory-kernel.bin factory-rootfs.bin
++  IMAGE/factory-kernel.bin := append-kernel
++  IMAGE/factory-rootfs.bin := append-ubi | check-size
++  IMAGE/sysupgrade.bin := sysupgrade-tar | append-metadata
++endef
++TARGET_DEVICES += nokia_xg-040g-md
++
++define Device/nokia_xg-040g-md-ubi
++  $(call Device/nokia_xg-040g-md-common)
++  DEVICE_VARIANT := (UBI)
++  DEVICE_DTS := an7581-nokia_xg-040g-md-ubi
++  UBOOTENV_IN_UBI := 1
++  KERNEL_IN_UBI := 1
++  KERNEL := kernel-bin | gzip
++  KERNEL_INITRAMFS := kernel-bin | lzma | \
++	fit lzma $$(KDIR)/image-$$(firstword $$(DEVICE_DTS)).dtb with-initrd | pad-to 128k
++  KERNEL_INITRAMFS_SUFFIX := -recovery.itb
++  IMAGES := sysupgrade.itb
++  IMAGE/sysupgrade.itb := append-kernel | \
++	fit gzip $$(KDIR)/image-$$(firstword $$(DEVICE_DTS)).dtb external-static-with-rootfs | \
++	append-metadata
++  DEVICE_PACKAGES += fitblk
++  ARTIFACT/bl31-uboot.fip := an7581-bl31-uboot nokia_xg-040g-md
++  ARTIFACT/preloader.bin := an7581-preloader nokia_xg-040g-md
++  ARTIFACTS := bl31-uboot.fip preloader.bin
++endef
++TARGET_DEVICES += nokia_xg-040g-md-ubi

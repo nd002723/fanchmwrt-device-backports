@@ -1,0 +1,152 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Alexandru Gagniuc <mr.nuke.me@gmail.com>
+Date: Wed, 14 May 2025 11:47:23 -0500
+Subject: [PATCH 18/76] qualcommax: ipq60xx: rename TP-Link EAP623-Outdoor HD
+ v1 compatible
+
+Originally, the .compatible string for EAP623-Outdoor HD tried to
+shorten the "-outdoor" to "od". However, this naming was inconsistent
+with the existing "eap610-outdoor". As "od" is not a common shorthand,
+spell out the complete word: "eap623-outdoor-hd-v1".
+
+Fixes: 5dbf93c8c5 ("ipq60xx: add support for TP-Link EAP623-Outdoor HD v1")
+Signed-off-by: Alexandru Gagniuc <mr.nuke.me@gmail.com>
+Link: https://github.com/openwrt/openwrt/pull/18804
+Signed-off-by: Robert Marko <robimarko@gmail.com>
+---
+ .../uboot-tools/uboot-envtools/files/qualcommax_ipq60xx   | 8 +++++++-
+ ...ap623od-hd-v1.dts => ipq6018-eap623-outdoor-hd-v1.dts} | 2 +-
+ target/linux/qualcommax/image/ipq60xx.mk                  | 4 ++--
+ .../qualcommax/ipq60xx/base-files/etc/board.d/02_network  | 4 ++--
+ .../base-files/etc/hotplug.d/firmware/11-ath11k-caldata   | 2 +-
+ .../ipq60xx/base-files/lib/preinit/09_mount_factory_data  | 2 +-
+ .../qualcommax/ipq60xx/base-files/lib/upgrade/platform.sh | 2 +-
+ 7 files changed, 15 insertions(+), 9 deletions(-)
+ rename target/linux/qualcommax/files/arch/arm64/boot/dts/qcom/{ipq6018-eap623od-hd-v1.dts => ipq6018-eap623-outdoor-hd-v1.dts} (97%)
+
+diff --git a/package/boot/uboot-tools/uboot-envtools/files/qualcommax_ipq60xx b/package/boot/uboot-tools/uboot-envtools/files/qualcommax_ipq60xx
+index 14e8950feb9..f7eb07147f5 100644
+--- a/package/boot/uboot-tools/uboot-envtools/files/qualcommax_ipq60xx
++++ b/package/boot/uboot-tools/uboot-envtools/files/qualcommax_ipq60xx
+@@ -7,6 +7,12 @@ touch /etc/config/ubootenv
+ 
+ board=$(board_name)
+ 
++ubootenv_add_mtd() {
++	local idx="$(find_mtd_index "${1}")"
++	[ -n "$idx" ] && \
++		ubootenv_add_uci_config "/dev/mtd$idx" "${2}" "${3}" "${4}"
++}
++
+ case "$board" in
+ 8devices,mango-dvk|\
+ 8devices,mango-dvk-sfp|\
+@@ -25,7 +31,7 @@ netgear,wax214|\
+ netgear,wax610|\
+ netgear,wax610y|\
+ tplink,eap610-outdoor|\
+-tplink,eap623od-hd-v1|\
++tplink,eap623-outdoor-hd-v1|\
+ tplink,eap620-hd-v3|\
+ tplink,eap625-outdoor-hd-v1)
+ 	ubootenv_add_mtd "0:appsblenv" "0x0" "0x40000" "0x20000"
+diff --git a/target/linux/qualcommax/files/arch/arm64/boot/dts/qcom/ipq6018-eap623od-hd-v1.dts b/target/linux/qualcommax/files/arch/arm64/boot/dts/qcom/ipq6018-eap623-outdoor-hd-v1.dts
+similarity index 97%
+rename from target/linux/qualcommax/files/arch/arm64/boot/dts/qcom/ipq6018-eap623od-hd-v1.dts
+rename to target/linux/qualcommax/files/arch/arm64/boot/dts/qcom/ipq6018-eap623-outdoor-hd-v1.dts
+index f54593a08bf..3aaa32e827b 100644
+--- a/target/linux/qualcommax/files/arch/arm64/boot/dts/qcom/ipq6018-eap623od-hd-v1.dts
++++ b/target/linux/qualcommax/files/arch/arm64/boot/dts/qcom/ipq6018-eap623-outdoor-hd-v1.dts
+@@ -12,7 +12,7 @@
+ 
+ / {
+ 	model = "TP-Link EAP623-Outdoor HD V1.0";
+-	compatible = "tplink,eap623od-hd-v1", "qcom,ipq6018";
++	compatible = "tplink,eap623-outdoor-hd-v1", "qcom,ipq6018";
+ 
+ 	aliases {
+ 		serial0 = &blsp1_uart3;
+diff --git a/target/linux/qualcommax/image/ipq60xx.mk b/target/linux/qualcommax/image/ipq60xx.mk
+index f918ae139fe..7a52f52099e 100644
+--- a/target/linux/qualcommax/image/ipq60xx.mk
++++ b/target/linux/qualcommax/image/ipq60xx.mk
+@@ -251,7 +251,7 @@ define Device/tplink_eap610-outdoor
+ endef
+ TARGET_DEVICES += tplink_eap610-outdoor
+ 
+-define Device/tplink_eap623od-hd-v1
++define Device/tplink_eap623-outdoor-hd-v1
+ 	$(call Device/FitImage)
+ 	$(call Device/UbiFit)
+ 	DEVICE_VENDOR := TP-Link
+@@ -265,7 +265,7 @@ define Device/tplink_eap623od-hd-v1
+ 	IMAGE/web-ui-factory.bin := append-ubi | tplink-image-2022
+ 	TPLINK_SUPPORT_STRING := SupportList:\r\nEAP623-Outdoor HD(TP-Link|UN|AX1800-D):1.0\r\n
+ endef
+-TARGET_DEVICES += tplink_eap623od-hd-v1
++TARGET_DEVICES += tplink_eap623-outdoor-hd-v1
+ 
+ define Device/tplink_eap625-outdoor-hd-v1
+ 	$(call Device/FitImage)
+diff --git a/target/linux/qualcommax/ipq60xx/base-files/etc/board.d/02_network b/target/linux/qualcommax/ipq60xx/base-files/etc/board.d/02_network
+index 67ac532602a..558c68dacc0 100644
+--- a/target/linux/qualcommax/ipq60xx/base-files/etc/board.d/02_network
++++ b/target/linux/qualcommax/ipq60xx/base-files/etc/board.d/02_network
+@@ -41,8 +41,8 @@ ipq60xx_setup_interfaces()
+ 	netgear,wax610|\
+ 	netgear,wax610y|\
+ 	tplink,eap610-outdoor|\
+-	tplink,eap623od-hd-v1|\
+ 	tplink,eap620-hd-v3|\
++	tplink,eap623-outdoor-hd-v1|\
+ 	tplink,eap625-outdoor-hd-v1)
+ 		ucidef_set_interface_lan "lan" "dhcp"
+ 		;;
+@@ -70,7 +70,7 @@ ipq60xx_setup_macs()
+ 		;;
+ 	tplink,eap610-outdoor|\
+ 	tplink,eap620-hd-v3|\
+-	tplink,eap623od-hd-v1|\
++	tplink,eap623-outdoor-hd-v1|\
+ 	tplink,eap625-outdoor-hd-v1)
+ 		label_mac=$(get_mac_binary /tmp/factory_data/default-mac 0)
+ 		lan_mac=$label_mac
+diff --git a/target/linux/qualcommax/ipq60xx/base-files/etc/hotplug.d/firmware/11-ath11k-caldata b/target/linux/qualcommax/ipq60xx/base-files/etc/hotplug.d/firmware/11-ath11k-caldata
+index 77587aeca45..14ab459e664 100644
+--- a/target/linux/qualcommax/ipq60xx/base-files/etc/hotplug.d/firmware/11-ath11k-caldata
++++ b/target/linux/qualcommax/ipq60xx/base-files/etc/hotplug.d/firmware/11-ath11k-caldata
+@@ -70,7 +70,7 @@ case "$FIRMWARE" in
+ 		ath11k_set_macflag
+ 		;;
+ 	tplink,eap610-outdoor|\
+-	tplink,eap623od-hd-v1|\
++	tplink,eap623-outdoor-hd-v1|\
+ 	tplink,eap625-outdoor-hd-v1)
+ 		caldata_from_file "/tmp/factory_data/radio" 0 0x10000
+ 		label_mac=$(get_mac_binary /tmp/factory_data/default-mac 0)
+diff --git a/target/linux/qualcommax/ipq60xx/base-files/lib/preinit/09_mount_factory_data b/target/linux/qualcommax/ipq60xx/base-files/lib/preinit/09_mount_factory_data
+index 09ca32f08c4..fbd294f3332 100644
+--- a/target/linux/qualcommax/ipq60xx/base-files/lib/preinit/09_mount_factory_data
++++ b/target/linux/qualcommax/ipq60xx/base-files/lib/preinit/09_mount_factory_data
+@@ -9,7 +9,7 @@ preinit_mount_factory_data() {
+ 	case $(board_name) in
+ 	tplink,eap610-outdoor|\
+ 	tplink,eap620-hd-v3|\
+-	tplink,eap623od-hd-v1|\
++	tplink,eap623-outdoor-hd-v1|\
+ 	tplink,eap625-outdoor-hd-v1)
+ 		mtd_path=$(find_mtd_chardev "factory_data")
+ 		ubiattach --dev-path="$mtd_path" --devn=1
+diff --git a/target/linux/qualcommax/ipq60xx/base-files/lib/upgrade/platform.sh b/target/linux/qualcommax/ipq60xx/base-files/lib/upgrade/platform.sh
+index fccd4463dbd..6b36fe62586 100644
+--- a/target/linux/qualcommax/ipq60xx/base-files/lib/upgrade/platform.sh
++++ b/target/linux/qualcommax/ipq60xx/base-files/lib/upgrade/platform.sh
+@@ -160,7 +160,7 @@ platform_do_upgrade() {
+ 		;;
+ 	tplink,eap610-outdoor|\
+ 	tplink,eap620-hd-v3|\
+-	tplink,eap623od-hd-v1|\
++	tplink,eap623-outdoor-hd-v1|\
+ 	tplink,eap625-outdoor-hd-v1)
+ 		tplink_do_upgrade "$1"
+ 		;;

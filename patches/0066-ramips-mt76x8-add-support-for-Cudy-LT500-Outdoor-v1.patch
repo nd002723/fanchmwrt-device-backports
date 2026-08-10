@@ -1,0 +1,341 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: rodriguezst <git@rodriguezst.es>
+Date: Sat, 13 Jun 2026 14:14:17 +0000
+Subject: [PATCH 66/76] ramips: mt76x8: add support for Cudy LT500 Outdoor v1
+
+Hardware:
+ - SoC: MediaTek MT7628AN
+ - Flash: 16 MiB SPI NOR
+ - RAM: 128 MiB DDR2
+ - WLAN: 2.4 GHz (MT7628AN, 11n), 5 GHz (MediaTek MT7615E, 11ac)
+ - Ethernet: 1x10/100 Mbps LAN
+ - Buttons: 1 Reset button
+ - LEDs: 8x Green
+ - LTE: internal USB-connected modem Quectel EC200A
+ - Serial Console: unpopulated header 115200 8n1
+
+MAC addresses:
++---------+-------------------+-----------+
+|         | MAC               | Algorithm |
++---------+-------------------+-----------+
+| LAN     | 80:af:ca:xx:xx:x0 | label     |
+| WLAN 2g | 80:af:ca:xx:xx:x0 | label     |
+| WLAN 5g | 80:af:ca:xx:xx:x2 | +2        |
++---------+-------------------+-----------+
+
+Migration to OpenWrt:
+- Download the RSA signed intermediate firmware:
+  `openwrt-ramips-mt76x8-cudy_lt500-outdoor-v1-squashfs-flash.bin`
+- Connect computer to LAN and flash the intermediate firmware via OEM web interface
+- OpenWrt is now accessible via 192.168.1.1
+
+Revert back to OEM firmware:
+- Press the reset button while powering on the device
+- Connect the LAN port to the PC
+- Open 192.168.1.1 in a browser and use the wizard to upload and flash OEM firmware image
+- When recovery process is done, OEM firmware is accessible via 192.168.10.1 again
+
+Signed-off-by: rodriguezst <git@rodriguezst.es>
+Link: https://github.com/openwrt/openwrt/pull/23752
+Signed-off-by: Hauke Mehrtens <hauke@hauke-m.de>
+---
+ .../dts/mt7628an_cudy_lt500-outdoor-v1.dts    | 231 ++++++++++++++++++
+ target/linux/ramips/image/mt76x8.mk           |  12 +
+ .../mt76x8/base-files/etc/board.d/01_leds     |   4 +
+ .../mt76x8/base-files/etc/board.d/02_network  |   7 +
+ 4 files changed, 254 insertions(+)
+ create mode 100644 target/linux/ramips/dts/mt7628an_cudy_lt500-outdoor-v1.dts
+
+diff --git a/target/linux/ramips/dts/mt7628an_cudy_lt500-outdoor-v1.dts b/target/linux/ramips/dts/mt7628an_cudy_lt500-outdoor-v1.dts
+new file mode 100644
+index 00000000000..8f09a4e45ce
+--- /dev/null
++++ b/target/linux/ramips/dts/mt7628an_cudy_lt500-outdoor-v1.dts
+@@ -0,0 +1,231 @@
++// SPDX-License-Identifier: GPL-2.0-or-later OR MIT
++
++#include "mt7628an.dtsi"
++
++#include <dt-bindings/gpio/gpio.h>
++#include <dt-bindings/input/input.h>
++#include <dt-bindings/leds/common.h>
++
++/ {
++	compatible = "cudy,lt500-outdoor-v1", "mediatek,mt7628an-soc";
++	model = "Cudy LT500 Outdoor v1";
++
++	aliases {
++		led-boot = &led_status;
++		led-running = &led_status;
++		led-failsafe = &led_status;
++		led-upgrade = &led_status;
++		label-mac-device = &ethernet;
++	};
++
++	chosen {
++		bootargs = "console=ttyS0,115200";
++	};
++
++	gpio-keys {
++		compatible = "gpio-keys";
++
++		reset {
++			label = "reset";
++			linux,code = <KEY_RESTART>;
++			gpios = <&gpio 11 GPIO_ACTIVE_LOW>;
++		};
++	};
++
++	leds {
++		compatible = "gpio-leds";
++
++		led_status: status {
++			gpios = <&gpio 4 GPIO_ACTIVE_LOW>;
++			color = <LED_COLOR_ID_GREEN>;
++			function = LED_FUNCTION_STATUS;
++		};
++
++		internet {
++			gpios = <&gpio 40 GPIO_ACTIVE_HIGH>;
++			color = <LED_COLOR_ID_GREEN>;
++			function = LED_FUNCTION_WAN_ONLINE;
++		};
++
++		lan {
++			gpios = <&gpio 42 GPIO_ACTIVE_LOW>;
++			color = <LED_COLOR_ID_GREEN>;
++			function = LED_FUNCTION_LAN;
++		};
++
++		wifi2g {
++			gpios = <&gpio 0 GPIO_ACTIVE_LOW>;
++			color = <LED_COLOR_ID_GREEN>;
++			function = LED_FUNCTION_WLAN_2GHZ;
++			linux,default-trigger = "phy0tpt";
++		};
++
++		wifi5g {
++			gpios = <&gpio 43 GPIO_ACTIVE_LOW>;
++			color = <LED_COLOR_ID_GREEN>;
++			function = LED_FUNCTION_WLAN_5GHZ;
++			linux,default-trigger = "phy1tpt";
++		};
++
++		signal1 {
++			gpios = <&gpio 44 GPIO_ACTIVE_LOW>;
++			label = "green:signal1";
++		};
++
++		signal2 {
++			gpios = <&gpio 41 GPIO_ACTIVE_LOW>;
++			label = "green:signal2";
++		};
++
++		signal3 {
++			gpios = <&gpio 39 GPIO_ACTIVE_LOW>;
++			label = "green:signal3";
++		};
++	};
++
++	gpio-export {
++		compatible = "gpio-export";
++
++		pwr {
++			gpio-export,name = "pwr";
++			gpio-export,output = <0>;
++			gpios = <&gpio 38 GPIO_ACTIVE_HIGH>;
++		};
++
++		usb4g {
++			gpio-export,name = "4g";
++			gpio-export,output = <0>;
++			gpios = <&gpio 3 GPIO_ACTIVE_HIGH>;
++		};
++	};
++};
++
++&spi0 {
++	status = "okay";
++
++	flash@0 {
++		compatible = "jedec,spi-nor";
++		reg = <0>;
++		spi-max-frequency = <40000000>;
++
++		partitions {
++			compatible = "fixed-partitions";
++			#address-cells = <1>;
++			#size-cells = <1>;
++
++			partition@0 {
++				label = "u-boot";
++				reg = <0x0 0x30000>;
++				read-only;
++			};
++
++			partition@30000 {
++				label = "u-boot-env";
++				reg = <0x30000 0x10000>;
++				read-only;
++			};
++
++			factory: partition@40000 {
++				label = "factory";
++				reg = <0x40000 0x10000>;
++				read-only;
++
++				nvmem-layout {
++					compatible = "fixed-layout";
++					#address-cells = <1>;
++					#size-cells = <1>;
++
++					eeprom_factory_0: eeprom@0 {
++						reg = <0x0 0x400>;
++					};
++
++					eeprom_factory_8000: eeprom@8000 {
++						reg = <0x8000 0x4da8>;
++					};
++				};
++			};
++
++			partition@fd0000 {
++				label = "debug";
++				reg = <0xfd0000 0x10000>;
++				read-only;
++			};
++
++			partition@fe0000 {
++				label = "backup";
++				reg = <0xfe0000 0x10000>;
++				read-only;
++			};
++
++			bdinfo: partition@ff0000 {
++				label = "bdinfo";
++				reg = <0xff0000 0x10000>;
++				read-only;
++
++				nvmem-layout {
++					compatible = "fixed-layout";
++					#address-cells = <1>;
++					#size-cells = <1>;
++
++					macaddr_bdinfo_de00: macaddr@de00 {
++						compatible = "mac-base";
++						reg = <0xde00 0x6>;
++						#nvmem-cell-cells = <1>;
++					};
++				};
++			};
++
++			partition@50000 {
++				compatible = "denx,uimage";
++				label = "firmware";
++				reg = <0x50000 0xf80000>;
++			};
++		};
++	};
++};
++
++&state_default {
++	gpio {
++		groups = "refclk", "wled_an", "gpio", "spi cs1";
++		function = "gpio";
++	};
++};
++
++&pcie {
++	status = "okay";
++};
++
++&pcie0 {
++	wifi@0,0 {
++		compatible = "mediatek,mt76";
++		reg = <0x0000 0 0 0 0>;
++		nvmem-cells = <&eeprom_factory_8000>, <&macaddr_bdinfo_de00 2>;
++		nvmem-cell-names = "eeprom", "mac-address";
++		ieee80211-freq-limit = <5000000 6000000>;
++	};
++};
++
++&wmac {
++	status = "okay";
++
++	nvmem-cells = <&eeprom_factory_0>, <&macaddr_bdinfo_de00 0>;
++	nvmem-cell-names = "eeprom", "mac-address";
++};
++
++&ethernet {
++	nvmem-cells = <&macaddr_bdinfo_de00 0>;
++	nvmem-cell-names = "mac-address";
++};
++
++&ehci {
++	status = "okay";
++};
++
++&ohci {
++	status = "okay";
++};
++
++&esw {
++	mediatek,portmap = <0x3d>;
++	mediatek,portdisable = <0x3e>;
++};
+diff --git a/target/linux/ramips/image/mt76x8.mk b/target/linux/ramips/image/mt76x8.mk
+index 6f7f382203f..173beba69d9 100644
+--- a/target/linux/ramips/image/mt76x8.mk
++++ b/target/linux/ramips/image/mt76x8.mk
+@@ -221,6 +221,18 @@ define Device/cudy_lt400e-v1
+ endef
+ TARGET_DEVICES += cudy_lt400e-v1
+ 
++define Device/cudy_lt500-outdoor-v1
++  IMAGE_SIZE := 15872k
++  DEVICE_VENDOR := Cudy
++  DEVICE_MODEL := LT500 Outdoor
++  DEVICE_VARIANT := v1
++  DEVICE_PACKAGES := kmod-mt7615e kmod-mt7663-firmware-ap kmod-usb2 \
++	kmod-usb-ohci kmod-usb-net-cdc-ether kmod-usb-serial-option
++  UIMAGE_NAME := R35
++  SUPPORTED_DEVICES += R35
++endef
++TARGET_DEVICES += cudy_lt500-outdoor-v1
++
+ define Device/cudy_m1200-v1
+   IMAGE_SIZE := 15872k
+   DEVICE_VENDOR := Cudy
+diff --git a/target/linux/ramips/mt76x8/base-files/etc/board.d/01_leds b/target/linux/ramips/mt76x8/base-files/etc/board.d/01_leds
+index 5b85303cde2..461aa228512 100644
+--- a/target/linux/ramips/mt76x8/base-files/etc/board.d/01_leds
++++ b/target/linux/ramips/mt76x8/base-files/etc/board.d/01_leds
+@@ -133,6 +133,10 @@ tplink,archer-mr200-v6)
+ 	ucidef_set_led_netdev "lan" "lan" "white:lan" "eth0"
+ 	ucidef_set_led_netdev "wan" "wan" "white:wan" "wwan0"
+ 	;;
++cudy,lt500-outdoor-v1)
++	ucidef_set_led_switch "lan" "lan" "green:lan" "switch0" "0x01"
++	ucidef_set_led_netdev "internet" "internet" "green:wan-online" "usb0"
++	;;
+ cudy,re1200-outdoor-v1|\
+ mercusys,mb130-4g-v1|\
+ tplink,re200-v2|\
+diff --git a/target/linux/ramips/mt76x8/base-files/etc/board.d/02_network b/target/linux/ramips/mt76x8/base-files/etc/board.d/02_network
+index ae05ffccc9b..8404b2af033 100644
+--- a/target/linux/ramips/mt76x8/base-files/etc/board.d/02_network
++++ b/target/linux/ramips/mt76x8/base-files/etc/board.d/02_network
+@@ -213,6 +213,13 @@ ramips_setup_interfaces()
+ 			"0:lan" "1:lan" "2:lan" "3:lan" "6t@eth0"
+ 		ucidef_set_interface "wan" device "/dev/cdc-wdm0" protocol "qmi"
+ 		;;
++	cudy,lt500-outdoor-v1)
++		ucidef_add_switch "switch0" \
++			"0:lan" "6@eth0"
++		ucidef_set_interface "wwan" device "usb0" protocol "dhcp"
++		uci add_list firewall.@zone[1].network='wwan'
++		uci add_list firewall.@zone[1].network='wwan6'
++		;;
+ 	cudy,re1200-outdoor-v1|\
+ 	tplink,tl-mr3020-v3)
+ 		ucidef_add_switch "switch0" \

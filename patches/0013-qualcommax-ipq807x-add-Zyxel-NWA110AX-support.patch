@@ -1,0 +1,1086 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Michael Lotz <mmlr@mlotz.ch>
+Date: Mon, 2 Feb 2026 11:27:39 +0100
+Subject: [PATCH 13/76] qualcommax: ipq807x: add Zyxel NWA110AX support
+
+The Zyxel NWA110AX is a dual band 2x2:2 802.11ax wireless access point
+with PoE.
+
+The device is very similar to the NWA210AX except for being 2x2 instead
+of 4x4 in the 5GHz band and not having the 2.5GbE ethernet port. This
+commit factors out a common DTS and device definition and reuses it for
+both devices.
+
+Hardware:
+* SoC: Qualcomm IPQ8070A
+* RAM: 1GiB 1x Samsung K4A8G165WC-BCTD
+* Flash: 8MiB Winbond W25Q64DW SPI-NOR, 256MiB Winbond W29N02GZ SPI-NAND
+* WLAN 2.4GHz: QCN5024 2x2:2 802.11b/g/n/ax
+* WLAN 5GHz: QCN5054 2x2:2 802.11n/ac/ax
+* Ethernet: 1x 1GbE with AR8033 PHY
+* Serial Config: 3.3V TTL 115200-8-N-1, externally accessible
+* Serial Layout: GND TX RX 3.3V (don't connect, marked with triangle)
+* LEDs: 1x red, 1x green, 1x blue, 1x white
+* Buttons: 1x reset
+
+MAC addresses:
+* Uplink: base address on label
+* 2.4GHz WLAN: base + 1
+* 5GHZ WLAN: base + 2
+
+Flashing Notes:
+The device uses a dual-image setup and OpenWrt can only be installed as
+image 0. When the currently running stock firmware is image 0, OpenWrt
+will be installed as image 1, fail to boot and the device returns to stock
+firmware. If this happens, install any version of stock firmware so that
+it runs as image 1, before installing OpenWrt. Alternatively, if there
+already is a valid stock firmware in image 1, the "debug dual-image show"
+and "debug dual-image set boot-image image1" commands can be used in the
+stock CLI via serial/SSH/telnet to switch to image 1.
+
+Flashing with Stock Web Interface:
+* Get the OpenWrt factory image and rename it to a shorter name, for
+  example "openwrt.bin" (the stock firmware has a character limit)
+* In the web interface, go to "Maintenance" -> "File Manager" ->
+  "Firmware Package" (or click the link next to "Firmware Version" under
+  "Device Information" on the dashboard)
+* Under "Upload File" browse to the renamed OpenWrt factory image and
+  click on "Upload"
+
+Switch Boot Image:
+* OpenWrt to stock: "zyxel-bootconfig-ipq807x set image1"
+* Stock to OpenWrt: "debug dual-image set boot-image image0"
+
+Unbrick / Revert to Stock with the Boot Module:
+* Disconnect the device from power
+* Configure your machine to 192.168.1.103/24 and start a TFTP server
+* Put the stock firmware image into the TFTP server root and rename it to
+  "ZLD-current"
+* Establish a serial connection to the device through the console port
+* Connect the device to power
+* When prompted, press a key to abort automatic boot and enter debug mode
+* Use the "atnz" command to flash the firmware image
+* Use the "atgo" command to boot from the newly flashed image
+
+Signed-off-by: Michael Lotz <mmlr@mlotz.ch>
+Link: https://github.com/openwrt/openwrt/pull/21849
+Signed-off-by: Robert Marko <robimarko@gmail.com>
+---
+ .../uboot-envtools/files/qualcommax_ipq807x   |   1 +
+ package/firmware/ipq-wifi/Makefile            |   2 +
+ .../files/95_apply_bootconfig                 |   1 +
+ .../arm64/boot/dts/qcom/ipq8070-nwa110ax.dts  |  33 ++
+ .../arm64/boot/dts/qcom/ipq8071-nwa210ax.dts  | 362 +----------------
+ .../arm64/boot/dts/qcom/ipq807x-nwax10ax.dtsi | 375 ++++++++++++++++++
+ target/linux/qualcommax/image/ipq807x.mk      |  35 +-
+ .../ipq807x/base-files/etc/board.d/02_network |   4 +
+ .../etc/hotplug.d/firmware/11-ath11k-caldata  |   7 +
+ .../base-files/lib/upgrade/platform.sh        |   1 +
+ 10 files changed, 456 insertions(+), 365 deletions(-)
+ create mode 100644 target/linux/qualcommax/files/arch/arm64/boot/dts/qcom/ipq8070-nwa110ax.dts
+ create mode 100644 target/linux/qualcommax/files/arch/arm64/boot/dts/qcom/ipq807x-nwax10ax.dtsi
+
+diff --git a/package/boot/uboot-tools/uboot-envtools/files/qualcommax_ipq807x b/package/boot/uboot-tools/uboot-envtools/files/qualcommax_ipq807x
+index 4c00f4c5725..36f89f81759 100644
+--- a/package/boot/uboot-tools/uboot-envtools/files/qualcommax_ipq807x
++++ b/package/boot/uboot-tools/uboot-envtools/files/qualcommax_ipq807x
+@@ -31,6 +31,7 @@ aliyun,ap8220|\
+ compex,wpq873|\
+ edgecore,eap102|\
+ zyxel,nbg7815|\
++zyxel,nwa110ax|\
+ zyxel,nwa210ax)
+ 	ubootenv_add_mtd "0:appsblenv" "0x0" "0x10000" "0x10000"
+ 	;;
+diff --git a/package/firmware/ipq-wifi/Makefile b/package/firmware/ipq-wifi/Makefile
+index 16b96e71fab..9e563d48886 100644
+--- a/package/firmware/ipq-wifi/Makefile
++++ b/package/firmware/ipq-wifi/Makefile
+@@ -113,6 +113,7 @@ ALLWIFIBOARDS:= \
+ 	zte_mf287 \
+ 	zte_mf287plus \
+ 	zyxel_nbg7815 \
++	zyxel_nwa110ax \
+ 	zyxel_nwa210ax \
+ 	zyxel_scr50axe
+ 
+@@ -303,6 +304,7 @@ $(eval $(call generate-ipq-wifi-package,zte_mf286c,ZTE MF286C))
+ $(eval $(call generate-ipq-wifi-package,zte_mf287,ZTE MF287))
+ $(eval $(call generate-ipq-wifi-package,zte_mf287plus,ZTE MF287Plus))
+ $(eval $(call generate-ipq-wifi-package,zyxel_nbg7815,Zyxel NBG7815))
++$(eval $(call generate-ipq-wifi-package,zyxel_nwa110ax,Zyxel NWA110AX))
+ $(eval $(call generate-ipq-wifi-package,zyxel_nwa210ax,Zyxel NWA210AX))
+ $(eval $(call generate-ipq-wifi-package,zyxel_scr50axe,Zyxel SCR50AXE))
+ 
+diff --git a/package/utils/zyxel-bootconfig-ipq807x/files/95_apply_bootconfig b/package/utils/zyxel-bootconfig-ipq807x/files/95_apply_bootconfig
+index 03c833b9516..d70bd50497d 100644
+--- a/package/utils/zyxel-bootconfig-ipq807x/files/95_apply_bootconfig
++++ b/package/utils/zyxel-bootconfig-ipq807x/files/95_apply_bootconfig
+@@ -2,6 +2,7 @@ apply_bootconfig() {
+ 	. /lib/functions.sh
+ 
+ 	case $(board_name) in
++	zyxel,nwa110ax|\
+ 	zyxel,nwa210ax)
+ 		status="$(zyxel-bootconfig-ipq807x show | awk '/image0:/ {print $2}')"
+ 		[ "$status" != "selected" ] && zyxel-bootconfig-ipq807x --force set image0
+diff --git a/target/linux/qualcommax/files/arch/arm64/boot/dts/qcom/ipq8070-nwa110ax.dts b/target/linux/qualcommax/files/arch/arm64/boot/dts/qcom/ipq8070-nwa110ax.dts
+new file mode 100644
+index 00000000000..c9358a031d8
+--- /dev/null
++++ b/target/linux/qualcommax/files/arch/arm64/boot/dts/qcom/ipq8070-nwa110ax.dts
+@@ -0,0 +1,33 @@
++// SPDX-License-Identifier: GPL-2.0-or-later OR MIT
++/*
++ * Copyright (c) 2026 Michael Lotz <mmlr@mlotz.ch>
++ */
++
++/dts-v1/;
++
++#include "ipq807x-nwax10ax.dtsi"
++
++/ {
++	model = "Zyxel NWA110AX";
++	compatible = "zyxel,nwa110ax", "qcom,ipq8074";
++
++	aliases {
++		ethernet0 = &dp1;
++		label-mac-device = &dp1;
++	};
++};
++
++&switch {
++	switch_lan_bmp = <ESS_PORT1>;
++	switch_mac_mode = <MAC_MODE_SGMII0_RGMII4>;
++};
++
++&dp1 {
++	label = "uplink";
++	nvmem-cell-names = "mac-address";
++	nvmem-cells = <&label_mac 0>;
++};
++
++&wifi {
++	qcom,ath11k-calibration-variant = "Zyxel-NWA110AX";
++};
+diff --git a/target/linux/qualcommax/files/arch/arm64/boot/dts/qcom/ipq8071-nwa210ax.dts b/target/linux/qualcommax/files/arch/arm64/boot/dts/qcom/ipq8071-nwa210ax.dts
+index fb440d1e967..91a4027b40b 100644
+--- a/target/linux/qualcommax/files/arch/arm64/boot/dts/qcom/ipq8071-nwa210ax.dts
++++ b/target/linux/qualcommax/files/arch/arm64/boot/dts/qcom/ipq8071-nwa210ax.dts
+@@ -6,43 +6,18 @@
+ 
+ /dts-v1/;
+ 
+-#include "ipq8074.dtsi"
+-#include "ipq8074-ac-cpu.dtsi"
+-#include "ipq8074-ess.dtsi"
+-#include <dt-bindings/gpio/gpio.h>
+-#include <dt-bindings/input/input.h>
+-#include <dt-bindings/leds/common.h>
++#include "ipq807x-nwax10ax.dtsi"
+ 
+ / {
+ 	model = "Zyxel NWA210AX";
+ 	compatible = "zyxel,nwa210ax", "qcom,ipq8074";
+ 
+ 	aliases {
+-		led-boot = &lp5562_blue;
+-		led-failsafe = &lp5562_white;
+-		led-running = &lp5562_green;
+-		led-upgrade = &lp5562_red;
+-		serial0 = &blsp1_uart5;
+ 		ethernet0 = &dp5;
+ 		ethernet1 = &dp1;
+ 		label-mac-device = &dp5;
+ 	};
+ 
+-	chosen {
+-		stdout-path = "serial0:115200n8";
+-		bootargs-append = " root=/dev/ubiblock0_1";
+-	};
+-
+-	keys {
+-		compatible = "gpio-keys";
+-
+-		reset {
+-			label = "reset";
+-			gpios = <&tlmm 31 GPIO_ACTIVE_LOW>;
+-			linux,code = <KEY_RESTART>;
+-		};
+-	};
+-
+ 	leds {
+ 		compatible = "gpio-leds";
+ 
+@@ -60,98 +35,32 @@
+ 			function = LED_FUNCTION_STATUS;
+ 		};
+ 	};
+-
+-	watchdog {
+-		compatible = "linux,wdt-gpio";
+-		gpios = <&tlmm 43 GPIO_ACTIVE_HIGH>;
+-		hw_algo = "toggle";
+-		hw_margin_ms = <10000>;
+-		always-running;
+-	};
+-};
+-
+-&blsp1_uart5 {
+-	status = "okay";
+-};
+-
+-&crypto {
+-	status = "okay";
+-};
+-
+-&edma {
+-	status = "okay";
+ };
+ 
+ &tlmm {
+-	mdio_pins: mdio-pins {
+-		mdc {
+-			pins = "gpio68";
+-			function = "mdc";
+-			drive-strength = <8>;
+-			bias-pull-up;
+-		};
+-
+-		mdio {
+-			pins = "gpio69";
+-			function = "mdio";
+-			drive-strength = <8>;
+-			bias-pull-up;
+-		};
+-	};
+-
+-	mdio_gpio_pins: mdio-gpio-pins {
+-		pins = "gpio37", "gpio44";
+-		function = "gpio";
+-		bias-pull-up;
+-	};
+-
+ 	button_pins: button-pins {
+ 		pins = "gpio30";
+ 		function = "gpio";
+ 		drive-strength = <8>;
+ 		bias-pull-up;
+ 	};
+-
+-	i2c_6_pins: i2c-6-state {
+-		pins = "gpio0", "gpio2";
+-		drive-strength = <8>;
+-		function = "blsp5_i2c";
+-		bias-disable;
+-	};
+ };
+ 
+ &switch {
+-	status = "okay";
+-
+ 	switch_lan_bmp = <(ESS_PORT1 | ESS_PORT5)>;
+ 	switch_mac_mode = <MAC_MODE_SGMII_CHANNEL0>;
+ 	switch_mac_mode1 = <MAC_MODE_SGMII_PLUS>;
++};
+ 
+-	qcom,port_phyinfo {
+-		port@1 {
+-			port_id = <1>;
+-			phy_address = <1>;
+-		};
+-
+-		port@5 {
+-			port_id = <5>;
+-			phy_address = <16>;
+-			port_mac_sel = "QGMAC_PORT";
+-		};
++&phyinfo {
++	port@5 {
++		port_id = <5>;
++		phy_address = <16>;
++		port_mac_sel = "QGMAC_PORT";
+ 	};
+ };
+ 
+ &mdio {
+-	status = "okay";
+-	pinctrl-0 = <&mdio_pins>;
+-	pinctrl-names = "default";
+-	reset-gpios = <&tlmm 37 GPIO_ACTIVE_LOW>;
+-
+-	ar8033: ethernet-phy@1 {
+-		compatible = "ethernet-phy-id004d.074";
+-		reg = <1>;
+-	};
+-
+ 	qca8081: ethernet-phy@16 {
+ 		compatible = "ethernet-phy-id004d.d101";
+ 		reg = <16>;
+@@ -161,9 +70,6 @@
+ };
+ 
+ &dp1 {
+-	status = "okay";
+-	phy-handle = <&ar8033>;
+-	phy-mode = "sgmii";
+ 	label = "lan1";
+ 	nvmem-cell-names = "mac-address";
+ 	nvmem-cells = <&label_mac 1>;
+@@ -178,260 +84,6 @@
+ 	nvmem-cells = <&label_mac 0>;
+ };
+ 
+-&blsp1_spi1 {
+-	pinctrl-0 = <&spi_0_pins>;
+-	pinctrl-names = "default";
+-	cs-select = <0>;
+-	status = "okay";
+-
+-	flash@0 {
+-		compatible = "jedec,spi-nor";
+-		#address-cells = <1>;
+-		#size-cells = <1>;
+-		reg = <0>;
+-		linux,modalias = "m25p80", "n25q128a11";
+-		spi-max-frequency = <50000000>;
+-
+-		partitions {
+-			compatible = "fixed-partitions";
+-			#address-cells = <1>;
+-			#size-cells = <1>;
+-
+-			partition@0 {
+-				label = "0:sbl1";
+-				reg = <0x0 0x50000>;
+-				read-only;
+-			};
+-
+-			partition@50000 {
+-				label = "0:mibib";
+-				reg = <0x50000 0x10000>;
+-				read-only;
+-			};
+-
+-			partition@60000 {
+-				label = "0:bootconfig";
+-				reg = <0x60000 0x20000>;
+-			};
+-
+-			partition@80000 {
+-				label = "0:bootconfig1";
+-				reg = <0x80000 0x20000>;
+-			};
+-
+-			partition@a0000 {
+-				label = "0:qsee";
+-				reg = <0xa0000 0x180000>;
+-				read-only;
+-			};
+-
+-			partition@220000 {
+-				label = "0:qsee_1";
+-				reg = <0x220000 0x180000>;
+-				read-only;
+-			};
+-
+-			partition@3a0000 {
+-				label = "0:devcfg";
+-				reg = <0x3a0000 0x10000>;
+-				read-only;
+-			};
+-
+-			partition@3b0000 {
+-				label = "0:devcfg_1";
+-				reg = <0x3b0000 0x10000>;
+-				read-only;
+-			};
+-
+-			partition@3c0000 {
+-				label = "0:apdp";
+-				reg = <0x3c0000 0x10000>;
+-				read-only;
+-			};
+-
+-			partition@3d0000 {
+-				label = "0:apdp_1";
+-				reg = <0x3d0000 0x10000>;
+-				read-only;
+-			};
+-
+-			partition@3e0000 {
+-				label = "0:rpm";
+-				reg = <0x3e0000 0x40000>;
+-				read-only;
+-			};
+-
+-			partition@420000 {
+-				label = "0:rpm_1";
+-				reg = <0x420000 0x40000>;
+-				read-only;
+-			};
+-
+-			partition@460000 {
+-				label = "0:cdt";
+-				reg = <0x460000 0x10000>;
+-				read-only;
+-			};
+-
+-			partition@470000 {
+-				label = "0:cdt_1";
+-				reg = <0x470000 0x10000>;
+-				read-only;
+-			};
+-
+-			partition@480000 {
+-				label = "0:appsblenv";
+-				reg = <0x480000 0x10000>;
+-				read-only;
+-			};
+-
+-			partition@490000 {
+-				label = "0:appsbl";
+-				reg = <0x490000 0xa0000>;
+-				read-only;
+-			};
+-
+-			partition@530000 {
+-				label = "0:appsbl_1";
+-				reg = <0x530000 0xa0000>;
+-				read-only;
+-			};
+-
+-			partition@5d0000 {
+-				label = "0:art";
+-				reg = <0x5d0000 0x40000>;
+-				read-only;
+-			};
+-
+-			partition@610000 {
+-				label = "mrd";
+-				reg = <0x610000 0x10000>;
+-				read-only;
+-
+-				nvmem-layout {
+-					compatible = "fixed-layout";
+-					#address-cells = <1>;
+-					#size-cells = <1>;
+-
+-					label_mac: macaddr@fff8 {
+-						compatible = "mac-base";
+-						reg = <0xfff8 0x6>;
+-						#nvmem-cell-cells = <1>;
+-					};
+-				};
+-			};
+-
+-			partition@620000 {
+-				label = "mrd_1";
+-				reg = <0x620000 0x10000>;
+-				read-only;
+-			};
+-
+-			partition@630000 {
+-				label = "conf";
+-				reg = <0x630000 0x1d0000>;
+-				read-only;
+-			};
+-		};
+-	};
+-};
+-
+-&qpic_bam {
+-	status = "okay";
+-};
+-
+-&qpic_nand {
+-	status = "okay";
+-
+-	nand@0 {
+-		reg = <0>;
+-		nand-ecc-step-size = <512>;
+-		nand-bus-width = <8>;
+-		nand-ecc-strength = <4>;
+-		compatible = "fixed-partitions";
+-		#address-cells = <1>;
+-		#size-cells = <1>;
+-
+-		partition@0 {
+-			reg = <0x00 0x3c00000>;
+-			label = "rootfs";
+-		};
+-
+-		partition@3c00000 {
+-			reg = <0x3c00000 0x800000>;
+-			label = "0:wififw";
+-			read-only;
+-		};
+-
+-		partition@4400000 {
+-			reg = <0x4400000 0x3c00000>;
+-			label = "rootfs_1";
+-		};
+-
+-		partition@8000000 {
+-			reg = <0x8000000 0x800000>;
+-			label = "0:wififw_1";
+-			read-only;
+-		};
+-
+-		partition@8800000 {
+-			reg = <0x8800000 0x7800000>;
+-			label = "logs";
+-		};
+-	};
+-};
+-
+ &wifi {
+-	status = "okay";
+ 	qcom,ath11k-calibration-variant = "Zyxel-NWA210AX";
+ };
+-
+-&blsp1_i2c6 {
+-	pinctrl-0 = <&i2c_6_pins>;
+-	pinctrl-names = "default";
+-	status = "okay";
+-
+-	lp5562@30 {
+-		compatible = "ti,lp5562";
+-		reg = <0x30>;
+-		clock-mode = [02];
+-		#address-cells = <1>;
+-		#size-cells = <0>;
+-
+-		lp5562_red: led@0 {
+-			chan-name = "lp5562_red";
+-			led-cur = [20];
+-			max-cur = [60];
+-			color = <LED_COLOR_ID_RED>;
+-			function = LED_FUNCTION_STATUS;
+-			reg = <0>;
+-		};
+-
+-		lp5562_green: led@1 {
+-			chan-name = "lp5562_green";
+-			led-cur = [20];
+-			max-cur = [60];
+-			color = <LED_COLOR_ID_GREEN>;
+-			function = LED_FUNCTION_STATUS;
+-			reg = <1>;
+-		};
+-
+-		lp5562_blue: led@2 {
+-			chan-name = "lp5562_blue";
+-			led-cur = [20];
+-			max-cur = [60];
+-			color = <LED_COLOR_ID_BLUE>;
+-			function = LED_FUNCTION_STATUS;
+-			reg = <2>;
+-		};
+-
+-		lp5562_white: led@3 {
+-			chan-name = "lp5562_white";
+-			led-cur = [20];
+-			max-cur = [60];
+-			color = <LED_COLOR_ID_WHITE>;
+-			function = LED_FUNCTION_STATUS;
+-			reg = <3>;
+-		};
+-	};
+-};
+diff --git a/target/linux/qualcommax/files/arch/arm64/boot/dts/qcom/ipq807x-nwax10ax.dtsi b/target/linux/qualcommax/files/arch/arm64/boot/dts/qcom/ipq807x-nwax10ax.dtsi
+new file mode 100644
+index 00000000000..f92d901bc87
+--- /dev/null
++++ b/target/linux/qualcommax/files/arch/arm64/boot/dts/qcom/ipq807x-nwax10ax.dtsi
+@@ -0,0 +1,375 @@
++// SPDX-License-Identifier: GPL-2.0-or-later OR MIT
++/*
++ * Copyright (c) 2025 Pascal Beleiu <pascal@beleiu.de>
++ * Copyright (c) 2025 Eric Schäfer <eric@es86.de>
++ */
++
++/dts-v1/;
++
++#include "ipq8074.dtsi"
++#include "ipq8074-ac-cpu.dtsi"
++#include "ipq8074-ess.dtsi"
++#include <dt-bindings/gpio/gpio.h>
++#include <dt-bindings/input/input.h>
++#include <dt-bindings/leds/common.h>
++
++/ {
++	aliases {
++		led-boot = &lp5562_blue;
++		led-failsafe = &lp5562_white;
++		led-running = &lp5562_green;
++		led-upgrade = &lp5562_red;
++		serial0 = &blsp1_uart5;
++	};
++
++	chosen {
++		stdout-path = "serial0:115200n8";
++		bootargs-append = " root=/dev/ubiblock0_1 loglevel=7";
++	};
++
++	keys {
++		compatible = "gpio-keys";
++
++		reset {
++			label = "reset";
++			gpios = <&tlmm 31 GPIO_ACTIVE_LOW>;
++			linux,code = <KEY_RESTART>;
++		};
++	};
++
++	watchdog {
++		compatible = "linux,wdt-gpio";
++		gpios = <&tlmm 43 GPIO_ACTIVE_HIGH>;
++		hw_algo = "toggle";
++		hw_margin_ms = <10000>;
++		always-running;
++	};
++};
++
++&blsp1_uart5 {
++	status = "okay";
++};
++
++&crypto {
++	status = "okay";
++};
++
++&edma {
++	status = "okay";
++};
++
++&tlmm {
++	mdio_pins: mdio-pins {
++		mdc {
++			pins = "gpio68";
++			function = "mdc";
++			drive-strength = <8>;
++			bias-pull-up;
++		};
++
++		mdio {
++			pins = "gpio69";
++			function = "mdio";
++			drive-strength = <8>;
++			bias-pull-up;
++		};
++	};
++
++	mdio_gpio_pins: mdio-gpio-pins {
++		pins = "gpio37", "gpio44";
++		function = "gpio";
++		bias-pull-up;
++	};
++
++	i2c_6_pins: i2c-6-state {
++		pins = "gpio0", "gpio2";
++		drive-strength = <8>;
++		function = "blsp5_i2c";
++		bias-disable;
++	};
++};
++
++&switch {
++	status = "okay";
++
++	phyinfo: qcom,port_phyinfo {
++		port@1 {
++			port_id = <1>;
++			phy_address = <1>;
++		};
++	};
++};
++
++&mdio {
++	status = "okay";
++	pinctrl-0 = <&mdio_pins>;
++	pinctrl-names = "default";
++	reset-gpios = <&tlmm 37 GPIO_ACTIVE_LOW>;
++
++	ar8033: ethernet-phy@1 {
++		compatible = "ethernet-phy-ieee802.3-c22";
++		reg = <1>;
++	};
++};
++
++&dp1 {
++	status = "okay";
++	phy-handle = <&ar8033>;
++	phy-mode = "sgmii";
++};
++
++&blsp1_spi1 {
++	pinctrl-0 = <&spi_0_pins>;
++	pinctrl-names = "default";
++	cs-select = <0>;
++	status = "okay";
++
++	flash@0 {
++		compatible = "jedec,spi-nor";
++		#address-cells = <1>;
++		#size-cells = <1>;
++		reg = <0>;
++		spi-max-frequency = <50000000>;
++
++		partitions {
++			compatible = "fixed-partitions";
++			#address-cells = <1>;
++			#size-cells = <1>;
++
++			partition@0 {
++				label = "0:sbl1";
++				reg = <0x0 0x50000>;
++				read-only;
++			};
++
++			partition@50000 {
++				label = "0:mibib";
++				reg = <0x50000 0x10000>;
++				read-only;
++			};
++
++			partition@60000 {
++				label = "0:bootconfig";
++				reg = <0x60000 0x20000>;
++			};
++
++			partition@80000 {
++				label = "0:bootconfig1";
++				reg = <0x80000 0x20000>;
++			};
++
++			partition@a0000 {
++				label = "0:qsee";
++				reg = <0xa0000 0x180000>;
++				read-only;
++			};
++
++			partition@220000 {
++				label = "0:qsee_1";
++				reg = <0x220000 0x180000>;
++				read-only;
++			};
++
++			partition@3a0000 {
++				label = "0:devcfg";
++				reg = <0x3a0000 0x10000>;
++				read-only;
++			};
++
++			partition@3b0000 {
++				label = "0:devcfg_1";
++				reg = <0x3b0000 0x10000>;
++				read-only;
++			};
++
++			partition@3c0000 {
++				label = "0:apdp";
++				reg = <0x3c0000 0x10000>;
++				read-only;
++			};
++
++			partition@3d0000 {
++				label = "0:apdp_1";
++				reg = <0x3d0000 0x10000>;
++				read-only;
++			};
++
++			partition@3e0000 {
++				label = "0:rpm";
++				reg = <0x3e0000 0x40000>;
++				read-only;
++			};
++
++			partition@420000 {
++				label = "0:rpm_1";
++				reg = <0x420000 0x40000>;
++				read-only;
++			};
++
++			partition@460000 {
++				label = "0:cdt";
++				reg = <0x460000 0x10000>;
++				read-only;
++			};
++
++			partition@470000 {
++				label = "0:cdt_1";
++				reg = <0x470000 0x10000>;
++				read-only;
++			};
++
++			partition@480000 {
++				label = "0:appsblenv";
++				reg = <0x480000 0x10000>;
++				read-only;
++			};
++
++			partition@490000 {
++				label = "0:appsbl";
++				reg = <0x490000 0xa0000>;
++				read-only;
++			};
++
++			partition@530000 {
++				label = "0:appsbl_1";
++				reg = <0x530000 0xa0000>;
++				read-only;
++			};
++
++			partition@5d0000 {
++				label = "0:art";
++				reg = <0x5d0000 0x40000>;
++				read-only;
++			};
++
++			partition@610000 {
++				label = "mrd";
++				reg = <0x610000 0x10000>;
++				read-only;
++
++				nvmem-layout {
++					compatible = "fixed-layout";
++					#address-cells = <1>;
++					#size-cells = <1>;
++
++					label_mac: macaddr@fff8 {
++						compatible = "mac-base";
++						reg = <0xfff8 0x6>;
++						#nvmem-cell-cells = <1>;
++					};
++				};
++			};
++
++			partition@620000 {
++				label = "mrd_1";
++				reg = <0x620000 0x10000>;
++				read-only;
++			};
++
++			partition@630000 {
++				label = "conf";
++				reg = <0x630000 0x1d0000>;
++				read-only;
++			};
++		};
++	};
++};
++
++&qpic_bam {
++	status = "okay";
++};
++
++&qpic_nand {
++	status = "okay";
++
++	nand@0 {
++		reg = <0>;
++		nand-ecc-step-size = <512>;
++		nand-bus-width = <8>;
++		nand-ecc-strength = <4>;
++		compatible = "fixed-partitions";
++		#address-cells = <1>;
++		#size-cells = <1>;
++
++		partition@0 {
++			reg = <0x00 0x3c00000>;
++			label = "rootfs";
++		};
++
++		partition@3c00000 {
++			reg = <0x3c00000 0x800000>;
++			label = "0:wififw";
++			read-only;
++		};
++
++		partition@4400000 {
++			reg = <0x4400000 0x3c00000>;
++			label = "rootfs_1";
++		};
++
++		partition@8000000 {
++			reg = <0x8000000 0x800000>;
++			label = "0:wififw_1";
++			read-only;
++		};
++
++		partition@8800000 {
++			reg = <0x8800000 0x7800000>;
++			label = "logs";
++		};
++	};
++};
++
++&wifi {
++	status = "okay";
++};
++
++&blsp1_i2c6 {
++	pinctrl-0 = <&i2c_6_pins>;
++	pinctrl-names = "default";
++	status = "okay";
++
++	lp5562@30 {
++		compatible = "ti,lp5562";
++		reg = <0x30>;
++		clock-mode = [02];
++		#address-cells = <1>;
++		#size-cells = <0>;
++
++		lp5562_red: led@0 {
++			chan-name = "lp5562_red";
++			led-cur = [20];
++			max-cur = [60];
++			color = <LED_COLOR_ID_RED>;
++			function = LED_FUNCTION_STATUS;
++			reg = <0>;
++		};
++
++		lp5562_green: led@1 {
++			chan-name = "lp5562_green";
++			led-cur = [20];
++			max-cur = [60];
++			color = <LED_COLOR_ID_GREEN>;
++			function = LED_FUNCTION_STATUS;
++			reg = <1>;
++		};
++
++		lp5562_blue: led@2 {
++			chan-name = "lp5562_blue";
++			led-cur = [20];
++			max-cur = [60];
++			color = <LED_COLOR_ID_BLUE>;
++			function = LED_FUNCTION_STATUS;
++			reg = <2>;
++		};
++
++		lp5562_white: led@3 {
++			chan-name = "lp5562_white";
++			led-cur = [20];
++			max-cur = [60];
++			color = <LED_COLOR_ID_WHITE>;
++			function = LED_FUNCTION_STATUS;
++			reg = <3>;
++		};
++	};
++};
+diff --git a/target/linux/qualcommax/image/ipq807x.mk b/target/linux/qualcommax/image/ipq807x.mk
+index b48a9142639..253eb0e3aab 100644
+--- a/target/linux/qualcommax/image/ipq807x.mk
++++ b/target/linux/qualcommax/image/ipq807x.mk
+@@ -1,4 +1,4 @@
+-DEVICE_VARS += NETGEAR_BOARD_ID NETGEAR_HW_ID TPLINK_SUPPORT_STRING
++DEVICE_VARS += NETGEAR_BOARD_ID NETGEAR_HW_ID TPLINK_SUPPORT_STRING ZYXEL_MODEL_ID
+ 
+ define Build/asus-fake-ramdisk
+ 	rm -rf $(KDIR)/tmp/fakerd
+@@ -44,9 +44,9 @@ define Build/wax6xx-netgear-tar
+ 	rm -rf $@.tmp
+ endef
+ 
+-define Build/zyxel-nwa210ax-fit
++define Build/zyxel-nwax10ax-fit
+ 	$(TOPDIR)/scripts/mkits-zyxel-fit-filogic.sh \
+-		$@.its $@ "5c e1 ff ff ff ff ff ff ff ff"
++		$@.its $@ "$(ZYXEL_MODEL_ID) ff ff ff ff ff ff ff ff"
+ 	PATH=$(LINUX_DIR)/scripts/dtc:$(PATH) mkimage -f $@.its $@.new
+ 	@mv $@.new $@
+ endef
+@@ -604,18 +604,33 @@ define Device/zyxel_nbg7815
+ endef
+ TARGET_DEVICES += zyxel_nbg7815
+ 
+-define Device/zyxel_nwa210ax
++define Device/zyxel_nwax10ax_common
+ 	$(call Device/FitImage)
+ 	$(call Device/UbiFit)
+-	DEVICE_VENDOR := ZYXEL
+-	DEVICE_MODEL := NWA210AX
+-	DEVICE_DTS_CONFIG := config@ac02
+-	SOC := ipq8071
+-	DEVICE_PACKAGES := ipq-wifi-zyxel_nwa210ax zyxel-bootconfig-ipq807x kmod-leds-lp5562
++	DEVICE_VENDOR := Zyxel
+ 	BLOCKSIZE := 128k
+ 	PAGESIZE := 2048
+ 	IMAGE_SIZE := 61440k
+ 	IMAGES += factory.bin
+-	IMAGE/factory.bin := append-ubi | check-size $$$$(IMAGE_SIZE) | zyxel-nwa210ax-fit
++	IMAGE/factory.bin := append-ubi | check-size $$$$(IMAGE_SIZE) | zyxel-nwax10ax-fit
++endef
++
++define Device/zyxel_nwa110ax
++	$(call Device/zyxel_nwax10ax_common)
++	DEVICE_MODEL := NWA110AX
++	DEVICE_DTS_CONFIG := config@ac01
++	SOC := ipq8070
++	DEVICE_PACKAGES := ipq-wifi-zyxel_nwa110ax zyxel-bootconfig-ipq807x kmod-leds-lp5562
++	ZYXEL_MODEL_ID := 59 e1
++endef
++TARGET_DEVICES += zyxel_nwa110ax
++
++define Device/zyxel_nwa210ax
++	$(call Device/zyxel_nwax10ax_common)
++	DEVICE_MODEL := NWA210AX
++	DEVICE_DTS_CONFIG := config@ac02
++	SOC := ipq8071
++	DEVICE_PACKAGES := ipq-wifi-zyxel_nwa210ax zyxel-bootconfig-ipq807x kmod-leds-lp5562
++	ZYXEL_MODEL_ID := 5c e1
+ endef
+ TARGET_DEVICES += zyxel_nwa210ax
+diff --git a/target/linux/qualcommax/ipq807x/base-files/etc/board.d/02_network b/target/linux/qualcommax/ipq807x/base-files/etc/board.d/02_network
+index 965a7f42fc7..392afed1774 100644
+--- a/target/linux/qualcommax/ipq807x/base-files/etc/board.d/02_network
++++ b/target/linux/qualcommax/ipq807x/base-files/etc/board.d/02_network
+@@ -74,6 +74,9 @@ ipq807x_setup_interfaces()
+ 	zyxel,nbg7815)
+ 		ucidef_set_interfaces_lan_wan "lan1 lan2 lan3 lan4 10g" "wan"
+ 		;;
++	zyxel,nwa110ax)
++		ucidef_set_interface_lan "uplink" "dhcp"
++		;;
+ 	zyxel,nwa210ax)
+ 		ucidef_set_interface_lan "uplink lan1" "dhcp"
+ 		;;
+@@ -110,6 +113,7 @@ ipq807x_setup_macs()
+ 		label_mac=$(get_mac_binary /tmp/factory_data/default-mac 0)
+ 		lan_mac=$label_mac
+ 		;;
++	zyxel,nwa110ax|\
+ 	zyxel,nwa210ax)
+ 		label_mac=$(get_mac_label_dt)
+ 		lan_mac=$label_mac
+diff --git a/target/linux/qualcommax/ipq807x/base-files/etc/hotplug.d/firmware/11-ath11k-caldata b/target/linux/qualcommax/ipq807x/base-files/etc/hotplug.d/firmware/11-ath11k-caldata
+index ef23e0af65a..a93f1fcd1e4 100644
+--- a/target/linux/qualcommax/ipq807x/base-files/etc/hotplug.d/firmware/11-ath11k-caldata
++++ b/target/linux/qualcommax/ipq807x/base-files/etc/hotplug.d/firmware/11-ath11k-caldata
+@@ -141,6 +141,13 @@ case "$FIRMWARE" in
+ 		ath11k_patch_mac $(macaddr_add $label_mac 4) 2
+ 		ath11k_set_macflag
+ 		;;
++	zyxel,nwa110ax)
++		caldata_extract "0:art" 0x1000 0x20000
++		label_mac=$(get_mac_label)
++		ath11k_patch_mac $(macaddr_add $label_mac 2) 0
++		ath11k_patch_mac $(macaddr_add $label_mac 1) 1
++		ath11k_set_macflag
++		;;
+ 	zyxel,nwa210ax)
+ 		caldata_extract "0:art" 0x1000 0x20000
+ 		label_mac=$(get_mac_label)
+diff --git a/target/linux/qualcommax/ipq807x/base-files/lib/upgrade/platform.sh b/target/linux/qualcommax/ipq807x/base-files/lib/upgrade/platform.sh
+index 9ba3d97c3d8..3f863b35fb5 100644
+--- a/target/linux/qualcommax/ipq807x/base-files/lib/upgrade/platform.sh
++++ b/target/linux/qualcommax/ipq807x/base-files/lib/upgrade/platform.sh
+@@ -187,6 +187,7 @@ platform_do_upgrade() {
+ 	netgear,wax218|\
+ 	netgear,wax620|\
+ 	netgear,wax630|\
++	zyxel,nwa110ax|\
+ 	zyxel,nwa210ax)
+ 		nand_do_upgrade "$1"
+ 		;;

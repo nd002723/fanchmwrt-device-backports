@@ -1,0 +1,232 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?J=C3=B6rg=20Seitz?= <github.joeterminal@xoxy.net>
+Date: Sun, 24 Aug 2025 06:51:11 +0200
+Subject: [PATCH 30/76] mediatek: filogic: Add new Router model ZBT-Z8106AX-S
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Device support for zbt-z8106ax-s
+
+Specifications:
+
+SoC: MediaTek MT7981B
+RAM: 256MiB
+Flash: Winbond SPI-NAND 128 MiB
+Switch: 1 WAN, 4 LAN (Gigabit) MediaTek MT7531
+Buttons: Reset
+Power: DC 12V 1A
+WiFi: MT7981B 2.4Ghz & 5Ghz
+USB 3
+M2 slot to hold LTE modem
+1 nano SIM slot (user controllable)
+Hardware watchdog (confirmed to work)
+
+Router comes in a plastic tower with all antennas internal.
+ - 4 antennas for LTE 4G/5G communication
+ - 2 antennas for Wifi 2.4 GHz
+ - 2 antennas for Wifi 5 GHz
+
+Led Layout:
+
+Power (green, user controllable, default set to OpenWrt Status)
+Mobile (green, user controllable)
+WLAN 2.4G (green, user controllable)
+WLAN 5G (green, user controllable)
+
+WAN (amber, user controllable, set to show eth1)
+LAN1 (amber, hardware controlled)
+LAN2 (amber, hardware controlled)
+LAN3 (amber, hardware controlled)
+LAN4 (amber, hardware controlled)
+
+SIM Slot:
+
+Controlled via exported GPIO named SIM.
+
+echo "0" > /sys/class/gpio/sim/value
+ - turns off sim slot labelled SIM
+
+echo "1" > /sys/class/gpio/sim/value
+ - turns on sim slot labelled SIM
+
+---
+
+Installation:
+
+A. Through U-Boot menu:
+
+- Prepare your connecting computer to use a static IP in
+  network 192.168.1.0/24 like
+  a) 192.168.1.10 netmask 255.255.255.0 (legacy notation)
+  b) 192.168.1.10/24 (CIDR notation)
+- Power down the router and hold in the Reset button.
+- While holding in the button power up the router again.
+- Hold the button in for 10 seconds and then release.
+- Use your browser to go to 192.168.1.1
+- If you see a GUI allowing for flashing firmware then you got the right spot.
+- Upload the **Factory** image file.
+
+Note: U-Boot GUI it can be used to recover from an incorrect firmware flash.
+
+B. Through OpenWrt Dashboard:
+
+If your router comes with OpenWrt preinstalled (modified by vendor),
+you can easily upgrade by going to the dashboard (192.168.1.1) and
+then navigate to "System" -> "Backup/Flash firmware"
+Flash OpenWRT firmware.
+Important: Take care to deselect (untick) option
+"keep settings". Settings done by vendor are incompatible with
+versions 24.10 or 25.12.
+
+MAC Addresses:
+
+MAC Addresses were found in Factory partition:
+
+offset 0x4 F8:5E:3C:xx:xx:aa --> Router Label -2
+offset 0xa F8:5E:3C:xx:xx:bb --> Router Label -1
+offset 0x24 F8:5E:3C:xx:xx:cc --> Router Label +1
+offset 0x2a F8:5E:3C:xx:xx:yy --> printed on Router Label
+
+Hardware Watchdog:
+
+Device features a GPIO controlled hardware watchdog.
+Verfied by removing procd controlled watchdog and
+seeing device rebooting.
+
+---
+
+Notes:
+The zbt-z8106ax-s could be ordered from vendor with a variety of modems.
+Mine came with a 4G LTE modem Quectel EC200A.
+Quectel firmware was at EC200AEUHAR01A30M16.
+Choices for ordering with 5G LTE were available.
+
+Modem communication is set to ethernet control mode (ECM) by vendor.
+
+Package modemmanager works fine with Quectel EC200A.
+You may also decide to use FUjR/Qmodem github repository
+to have it manage LTE modem.
+
+Please take note that internal switch port named lan5 isn't
+wired to LTE modem in model S as opposed to model T.
+Just removing lan5 from DTS did cause unwanted reboots whenever
+a cable is plugged into LAN ports 1-4. Disabling port lan5
+in DTS however works fine. No unwanted reboots due to
+plug/unplug cable into any lan or wan port.
+
+Signed-off-by: Jörg Seitz <github.joeterminal@xoxy.net>
+Link: https://github.com/openwrt/openwrt/pull/22912
+Signed-off-by: Hauke Mehrtens <hauke@hauke-m.de>
+---
+ .../dts/mt7981b-zbtlink-zbt-z8106ax-s.dts      | 16 ++++++++++++++++
+ .../dts/mt7981b-zbtlink-zbt-z8106ax.dtsi       |  2 +-
+ .../filogic/base-files/etc/board.d/01_leds     |  1 +
+ .../filogic/base-files/etc/board.d/02_network  |  3 ++-
+ .../base-files/etc/board.d/03_gpio_switches    |  1 +
+ target/linux/mediatek/image/filogic.mk         | 18 ++++++++++++++++++
+ 6 files changed, 39 insertions(+), 2 deletions(-)
+ create mode 100644 target/linux/mediatek/dts/mt7981b-zbtlink-zbt-z8106ax-s.dts
+
+diff --git a/target/linux/mediatek/dts/mt7981b-zbtlink-zbt-z8106ax-s.dts b/target/linux/mediatek/dts/mt7981b-zbtlink-zbt-z8106ax-s.dts
+new file mode 100644
+index 00000000000..3c5d1bfa1f7
+--- /dev/null
++++ b/target/linux/mediatek/dts/mt7981b-zbtlink-zbt-z8106ax-s.dts
+@@ -0,0 +1,16 @@
++// SPDX-License-Identifier: GPL-2.0-or-later OR MIT
++
++/dts-v1/;
++
++#include "mt7981b-zbtlink-zbt-z8106ax.dtsi"
++
++/ {
++	model = "Zbtlink ZBT-Z8106AX-S";
++	compatible = "zbtlink,zbt-z8106ax-s", "mediatek,mt7981b";
++};
++
++&port_4 {
++	/* The 4th port must be defined but isn't usable in model S, so we set it to disabled. */
++	status = "disabled";
++};
++
+diff --git a/target/linux/mediatek/dts/mt7981b-zbtlink-zbt-z8106ax.dtsi b/target/linux/mediatek/dts/mt7981b-zbtlink-zbt-z8106ax.dtsi
+index 07e49b10134..8a4d06d53b4 100644
+--- a/target/linux/mediatek/dts/mt7981b-zbtlink-zbt-z8106ax.dtsi
++++ b/target/linux/mediatek/dts/mt7981b-zbtlink-zbt-z8106ax.dtsi
+@@ -189,7 +189,7 @@
+ 			label = "lan4";
+ 		};
+ 
+-		port@4 {
++		port_4: port@4 {
+ 			reg = <4>;
+ 			label = "wwan";
+ 		};
+diff --git a/target/linux/mediatek/filogic/base-files/etc/board.d/01_leds b/target/linux/mediatek/filogic/base-files/etc/board.d/01_leds
+index 97684d232ba..82df17d87fa 100644
+--- a/target/linux/mediatek/filogic/base-files/etc/board.d/01_leds
++++ b/target/linux/mediatek/filogic/base-files/etc/board.d/01_leds
+@@ -330,6 +330,7 @@ zbtlink,zbt-z8103ax|\
+ zbtlink,zbt-z8103ax-c)
+ 	ucidef_set_led_netdev "wan" "wan" "green:wan" "eth1" "link tx rx"
+ 	;;
++zbtlink,zbt-z8106ax-s|\
+ zbtlink,zbt-z8106ax-t)
+ 	ucidef_set_led_netdev "wan" "wan" "amber:wan" "eth1" "link tx rx"
+ 	ucidef_set_led_netdev "mobile" "mobile" "green:mobile" "wwan" "link tx rx"
+diff --git a/target/linux/mediatek/filogic/base-files/etc/board.d/02_network b/target/linux/mediatek/filogic/base-files/etc/board.d/02_network
+index aadb4071284..fe795469e67 100644
+--- a/target/linux/mediatek/filogic/base-files/etc/board.d/02_network
++++ b/target/linux/mediatek/filogic/base-files/etc/board.d/02_network
+@@ -78,7 +78,8 @@ mediatek_setup_interfaces()
+ 	unielec,u7981-01*|\
+ 	wavlink,wl-wn536ax6-a|\
+ 	zbtlink,zbt-z8102ax|\
+-	zbtlink,zbt-z8102ax-v2)
++	zbtlink,zbt-z8102ax-v2|\
++	zbtlink,zbt-z8106ax-s)
+ 		ucidef_set_interfaces_lan_wan "lan1 lan2 lan3 lan4" "eth1"
+ 		;;
+ 	zbtlink,zbt-z8106ax-t)
+diff --git a/target/linux/mediatek/filogic/base-files/etc/board.d/03_gpio_switches b/target/linux/mediatek/filogic/base-files/etc/board.d/03_gpio_switches
+index 336f5ba60d2..0820bd97c89 100644
+--- a/target/linux/mediatek/filogic/base-files/etc/board.d/03_gpio_switches
++++ b/target/linux/mediatek/filogic/base-files/etc/board.d/03_gpio_switches
+@@ -21,6 +21,7 @@ zbtlink,zbt-z8102ax-v2)
+ 	ucidef_add_gpio_switch "sim1" "SIM 1" "sim1" "1"
+ 	ucidef_add_gpio_switch "sim2" "SIM 2" "sim2" "1"
+ 	;;
++zbtlink,zbt-z8106ax-s|\
+ zbtlink,zbt-z8106ax-t)
+ 	ucidef_add_gpio_switch "4g" "Power modem" "4g" "1"
+ 	ucidef_add_gpio_switch "sim" "SIM" "sim" "1"
+diff --git a/target/linux/mediatek/image/filogic.mk b/target/linux/mediatek/image/filogic.mk
+index ade2b0add0c..a4e81249a82 100644
+--- a/target/linux/mediatek/image/filogic.mk
++++ b/target/linux/mediatek/image/filogic.mk
+@@ -3467,6 +3467,24 @@ define Device/zbtlink_zbt-z8103ax-c
+ endef
+ TARGET_DEVICES += zbtlink_zbt-z8103ax-c
+ 
++define Device/zbtlink_zbt-z8106ax-s
++  DEVICE_VENDOR := Zbtlink
++  DEVICE_MODEL := ZBT-Z8106AX-S
++  SUPPORTED_DEVICES += zbtlink,z8106ax-2sim
++  DEVICE_DTS := mt7981b-zbtlink-zbt-z8106ax-s
++  DEVICE_DTS_DIR := ../dts
++  DEVICE_PACKAGES := kmod-mt7915e kmod-mt7981-firmware mt7981-wo-firmware kmod-usb3 kmod-usb-net-qmi-wwan kmod-usb-serial-option
++  KERNEL_IN_UBI := 1
++  UBINIZE_OPTS := -E 5
++  BLOCKSIZE := 128k
++  PAGESIZE := 2048
++  IMAGE_SIZE := 65536k
++  IMAGES += factory.bin
++  IMAGE/factory.bin := append-ubi | check-size $$(IMAGE_SIZE)
++  IMAGE/sysupgrade.bin := sysupgrade-tar | append-metadata
++endef
++TARGET_DEVICES += zbtlink_zbt-z8106ax-s
++
+ define Device/zbtlink_zbt-z8106ax-t
+   DEVICE_VENDOR := Zbtlink
+   DEVICE_MODEL := ZBT-Z8106AX-T

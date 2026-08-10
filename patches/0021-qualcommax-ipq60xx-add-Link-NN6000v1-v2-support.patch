@@ -1,0 +1,532 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Fire Chen <firedevel@icloud.com>
+Date: Sat, 7 Feb 2026 10:26:56 +0800
+Subject: [PATCH 21/76] qualcommax: ipq60xx: add Link NN6000v1/v2 support
+
+NN6000v1 Specifications:
+SoC:     Qualcomm IPQ6000 1.2GHz
+RAM:     K4B4G1646E-BCMA 512MiB x2 = 1 GiB
+Flash:   FORESEE 256GB eMMC
+ETH:     QCA8075 (2x LAN, 1x WAN)
+WLAN1:   QCN5022 2.4GHz AX 2x2
+WLAN2:   QCN5052 5GHz AX 2x2
+Power:   DC 12V
+Button:  Reset, Wps
+USB:     1x 3.0
+
+NN6000v2 Specifications:
+SoC:     Qualcomm IPQ6000 1.2GHz
+RAM:     MT41K512M16VRN-107 IT:P 1GiB x2 = 2 GiB
+Flash:   FORESEE 256GB eMMC
+ETH:     QCA8075 (4x LAN, 1x WAN)
+WLAN1:   QCN5022 2.4GHz AX 2x2
+WLAN2:   QCN5052 5GHz AX 2x2
+Power:   DC 12V
+Button:  Reset, Wps
+USB:     1x 3.0
+
+Install via UART:
+  1. Download the initramfs image, rename it to
+     initramfs.itb, host it with the tftp server.
+  2. Interrupt U-Boot and run these commands:
+     tftpboot initramfs.itb
+     bootm
+  3. After openwrt boots up, use scp or luci web
+     to upload sysupgrade.bin to upgrade.
+Install via Uboot WebUI:
+   - Only work when you flash a custom uboot with webui
+   - Push the reset button for 5 seconds, then use broswer to
+     access http://192.168.1.1/, then upload factory.bin.
+
+Signed-off-by: Fire Chen <firedevel@icloud.com>
+Link: https://github.com/openwrt/openwrt/pull/21787
+Signed-off-by: Robert Marko <robert.marko@sartura.hr>
+---
+ .../uboot-envtools/files/qualcommax_ipq60xx   |   4 +
+ package/firmware/ipq-wifi/Makefile            |   2 +
+ .../arm64/boot/dts/qcom/ipq6000-link.dtsi     | 123 ++++++++++++++++++
+ .../arm64/boot/dts/qcom/ipq6000-nn6000-v1.dts |  89 +++++++++++++
+ .../arm64/boot/dts/qcom/ipq6000-nn6000-v2.dts | 123 ++++++++++++++++++
+ target/linux/qualcommax/image/ipq60xx.mk      |  19 +++
+ .../ipq60xx/base-files/etc/board.d/02_network |   4 +-
+ .../etc/hotplug.d/firmware/11-ath11k-caldata  |   8 ++
+ .../base-files/lib/upgrade/platform.sh        |   4 +-
+ 9 files changed, 374 insertions(+), 2 deletions(-)
+ create mode 100644 target/linux/qualcommax/files/arch/arm64/boot/dts/qcom/ipq6000-link.dtsi
+ create mode 100644 target/linux/qualcommax/files/arch/arm64/boot/dts/qcom/ipq6000-nn6000-v1.dts
+ create mode 100644 target/linux/qualcommax/files/arch/arm64/boot/dts/qcom/ipq6000-nn6000-v2.dts
+
+diff --git a/package/boot/uboot-tools/uboot-envtools/files/qualcommax_ipq60xx b/package/boot/uboot-tools/uboot-envtools/files/qualcommax_ipq60xx
+index f7eb07147f5..e8008209269 100644
+--- a/package/boot/uboot-tools/uboot-envtools/files/qualcommax_ipq60xx
++++ b/package/boot/uboot-tools/uboot-envtools/files/qualcommax_ipq60xx
+@@ -25,6 +25,10 @@ linksys,mr7350|\
+ linksys,mr7500)
+ 	ubootenv_add_mtd "u_env" "0x0" "0x40000" "0x20000"
+ 	;;
++link,nn6000-v1|\
++link,nn6000-v2)
++	ubootenv_add_mmc "0:APPSBLENV" "" "0x0" "0x40000" "0x20000"
++	;;
+ netgear,rbr350|\
+ netgear,rbs350|\
+ netgear,wax214|\
+diff --git a/package/firmware/ipq-wifi/Makefile b/package/firmware/ipq-wifi/Makefile
+index af74989a245..32bd566fb75 100644
+--- a/package/firmware/ipq-wifi/Makefile
++++ b/package/firmware/ipq-wifi/Makefile
+@@ -50,6 +50,7 @@ ALLWIFIBOARDS:= \
+ 	iodata_wn-dax3000gr \
+ 	jdcloud_re-cs-02 \
+ 	jdcloud_re-ss-01 \
++	link_nn6000 \
+ 	linksys_homewrk \
+ 	linksys_mr5500 \
+ 	linksys_mr6350 \
+@@ -243,6 +244,7 @@ $(eval $(call generate-ipq-wifi-package,ignitenet_ss-w2-ac2600,Ignitenet SS-W2-A
+ $(eval $(call generate-ipq-wifi-package,iodata_wn-dax3000gr,I-O DATA WN-DAX3000GR))
+ $(eval $(call generate-ipq-wifi-package,jdcloud_re-cs-02,JDCloud RE-CS-02))
+ $(eval $(call generate-ipq-wifi-package,jdcloud_re-ss-01,JDCloud RE-SS-01))
++$(eval $(call generate-ipq-wifi-package,link_nn6000,Link NN6000))
+ $(eval $(call generate-ipq-wifi-package,linksys_homewrk,Linksys HomeWRK))
+ $(eval $(call generate-ipq-wifi-package,linksys_mr5500,Linksys MR5500))
+ $(eval $(call generate-ipq-wifi-package,linksys_mr6350,Linksys MR6350))
+diff --git a/target/linux/qualcommax/files/arch/arm64/boot/dts/qcom/ipq6000-link.dtsi b/target/linux/qualcommax/files/arch/arm64/boot/dts/qcom/ipq6000-link.dtsi
+new file mode 100644
+index 00000000000..c3b7621ec7d
+--- /dev/null
++++ b/target/linux/qualcommax/files/arch/arm64/boot/dts/qcom/ipq6000-link.dtsi
+@@ -0,0 +1,123 @@
++// SPDX-License-Identifier: GPL-2.0-or-later OR MIT
++
++#include "ipq6018-512m.dtsi"
++#include "ipq6018-ess.dtsi"
++
++#include <dt-bindings/gpio/gpio.h>
++#include <dt-bindings/input/input.h>
++#include <dt-bindings/leds/common.h>
++
++/ {
++	aliases {
++		serial0 = &blsp1_uart3;
++		led-boot = &led_status_red;
++		led-failsafe = &led_status_red;
++		led-running = &led_status_green;
++		led-upgrade = &led_status_red;
++	};
++
++	chosen {
++		stdout-path = "serial0:115200n8";
++	};
++
++	keys {
++		compatible = "gpio-keys";
++
++		wps {
++			label = "wps";
++			linux,code = <KEY_WPS_BUTTON>;
++			gpios = <&tlmm 42 GPIO_ACTIVE_LOW>;
++		};
++
++		reset {
++			label = "reset";
++			linux,code = <KEY_RESTART>;
++			gpios = <&tlmm 9 GPIO_ACTIVE_LOW>;
++		};
++	};
++
++	leds {
++		/* Single RGB led controlled via GPIO.
++		To mimic the OEM default behaviour red are switched on from boot */
++		compatible = "gpio-leds";
++
++		led_status_red: status-red {
++			gpios = <&tlmm 50 GPIO_ACTIVE_HIGH>;
++			color = <LED_COLOR_ID_RED>;
++			function = LED_FUNCTION_STATUS;
++			default-state = "on";
++		};
++
++		led_status_green: status-green {
++			gpios = <&tlmm 70 GPIO_ACTIVE_HIGH>;
++			color = <LED_COLOR_ID_GREEN>;
++			function = LED_FUNCTION_STATUS;
++		};
++
++		led_status_blue: status-blue {
++			gpios = <&tlmm 69 GPIO_ACTIVE_HIGH>;
++			color = <LED_COLOR_ID_BLUE>;
++			function = LED_FUNCTION_STATUS;
++		};
++	};
++};
++
++&tlmm {
++	gpio-reserved-ranges = <20 1>;
++
++	mdio_pins: mdio-pins {
++		mdc {
++			pins = "gpio64";
++			function = "mdc";
++			drive-strength = <8>;
++			bias-pull-up;
++		};
++
++		mdio {
++			pins = "gpio65";
++			function = "mdio";
++			drive-strength = <8>;
++			bias-pull-up;
++		};
++	};
++};
++
++&blsp1_uart3 {
++	status = "okay";
++	pinctrl-0 = <&serial_3_pins>;
++	pinctrl-names = "default";
++};
++
++&qusb_phy_0 {
++	status = "okay";
++};
++
++&ssphy_0 {
++	status = "okay";
++};
++
++&usb3 {
++	status = "okay";
++};
++
++&rpm {
++	status = "disabled";
++};
++
++&sdhc {
++	bus-width = <8>;
++	mmc-ddr-1_8v;
++	mmc-hs200-1_8v;
++	non-removable;
++	status = "okay";
++};
++
++&wifi {
++	status = "okay";
++	qcom,ath11k-fw-memory-mode = <1>;
++	qcom,ath11k-calibration-variant = "Link-NN6000";
++};
++
++&edma {
++	status = "okay";
++};
+diff --git a/target/linux/qualcommax/files/arch/arm64/boot/dts/qcom/ipq6000-nn6000-v1.dts b/target/linux/qualcommax/files/arch/arm64/boot/dts/qcom/ipq6000-nn6000-v1.dts
+new file mode 100644
+index 00000000000..641e5f0a316
+--- /dev/null
++++ b/target/linux/qualcommax/files/arch/arm64/boot/dts/qcom/ipq6000-nn6000-v1.dts
+@@ -0,0 +1,89 @@
++// SPDX-License-Identifier: GPL-2.0-or-later OR MIT
++
++/dts-v1/;
++
++#include "ipq6000-link.dtsi"
++
++/ {
++	model = "Link NN6000 v1";
++	compatible = "link,nn6000-v1", "qcom,ipq6018";
++
++	aliases {
++		ethernet1 = &dp2;
++		ethernet2 = &dp3;
++		ethernet3 = &dp4;
++	};
++};
++
++&mdio {
++	status = "okay";
++
++	pinctrl-0 = <&mdio_pins>;
++	pinctrl-names = "default";
++	reset-gpios = <&tlmm 75 GPIO_ACTIVE_LOW>;
++
++	ethernet-phy-package@0 {
++		compatible = "qcom,qca8075-package";
++		#address-cells = <1>;
++		#size-cells = <0>;
++		reg = <0>;
++
++		qca8075_1: ethernet-phy@1 {
++			compatible = "ethernet-phy-ieee802.3-c22";
++			reg = <1>;
++		};
++
++		qca8075_2: ethernet-phy@2 {
++			compatible = "ethernet-phy-ieee802.3-c22";
++			reg = <2>;
++		};
++
++		qca8075_3: ethernet-phy@3 {
++			compatible = "ethernet-phy-ieee802.3-c22";
++			reg = <3>;
++		};
++	};
++};
++
++&switch {
++	status = "okay";
++
++	switch_lan_bmp = <(ESS_PORT3 | ESS_PORT4)>;
++	switch_wan_bmp = <ESS_PORT2>;
++	switch_mac_mode = <MAC_MODE_PSGMII>;
++
++	qcom,port_phyinfo {
++		port@2 {
++			port_id = <2>;
++			phy_address = <1>;
++		};
++
++		port@3 {
++			port_id = <3>;
++			phy_address = <2>;
++		};
++
++		port@4 {
++			port_id = <4>;
++			phy_address = <3>;
++		};
++	};
++};
++
++&dp2 {
++	status = "okay";
++	phy-handle = <&qca8075_1>;
++	label = "wan";
++};
++
++&dp3 {
++	status = "okay";
++	phy-handle = <&qca8075_2>;
++	label = "lan1";
++};
++
++&dp4 {
++	status = "okay";
++	phy-handle = <&qca8075_3>;
++	label = "lan2";
++};
+diff --git a/target/linux/qualcommax/files/arch/arm64/boot/dts/qcom/ipq6000-nn6000-v2.dts b/target/linux/qualcommax/files/arch/arm64/boot/dts/qcom/ipq6000-nn6000-v2.dts
+new file mode 100644
+index 00000000000..3ed26140945
+--- /dev/null
++++ b/target/linux/qualcommax/files/arch/arm64/boot/dts/qcom/ipq6000-nn6000-v2.dts
+@@ -0,0 +1,123 @@
++// SPDX-License-Identifier: GPL-2.0-or-later OR MIT
++
++/dts-v1/;
++
++#include "ipq6000-link.dtsi"
++
++/ {
++	model = "Link NN6000 v2";
++	compatible = "link,nn6000-v2", "qcom,ipq6018";
++
++	aliases {
++		ethernet0 = &dp1;
++		ethernet1 = &dp2;
++		ethernet2 = &dp3;
++		ethernet3 = &dp4;
++		ethernet4 = &dp5;
++	};
++};
++
++&mdio {
++	status = "okay";
++
++	pinctrl-0 = <&mdio_pins>;
++	pinctrl-names = "default";
++	reset-gpios = <&tlmm 75 GPIO_ACTIVE_LOW>;
++
++	ethernet-phy-package@0 {
++		compatible = "qcom,qca8075-package";
++		#address-cells = <1>;
++		#size-cells = <0>;
++		reg = <0>;
++
++		qca8075_0: ethernet-phy@0 {
++			compatible = "ethernet-phy-ieee802.3-c22";
++			reg = <0>;
++		};
++
++		qca8075_1: ethernet-phy@1 {
++			compatible = "ethernet-phy-ieee802.3-c22";
++			reg = <1>;
++		};
++
++		qca8075_2: ethernet-phy@2 {
++			compatible = "ethernet-phy-ieee802.3-c22";
++			reg = <2>;
++		};
++
++		qca8075_3: ethernet-phy@3 {
++			compatible = "ethernet-phy-ieee802.3-c22";
++			reg = <3>;
++		};
++
++		qca8075_4: ethernet-phy@4 {
++			compatible = "ethernet-phy-ieee802.3-c22";
++			reg = <4>;
++		};
++	};
++};
++
++&switch {
++	status = "okay";
++
++	switch_lan_bmp = <(ESS_PORT1 | ESS_PORT3 | ESS_PORT4 | ESS_PORT5)>;
++	switch_wan_bmp = <ESS_PORT2>;
++	switch_mac_mode = <MAC_MODE_PSGMII>;
++
++	qcom,port_phyinfo {
++		port@1 {
++			port_id = <1>;
++			phy_address = <0>;
++		};
++
++		port@2 {
++			port_id = <2>;
++			phy_address = <1>;
++		};
++
++		port@3 {
++			port_id = <3>;
++			phy_address = <2>;
++		};
++
++		port@4 {
++			port_id = <4>;
++			phy_address = <3>;
++		};
++
++		port@5 {
++			port_id = <5>;
++			phy_address = <4>;
++		};
++	};
++};
++
++&dp1 {
++	status = "okay";
++	phy-handle = <&qca8075_0>;
++	label = "lan1";
++};
++
++&dp2 {
++	status = "okay";
++	phy-handle = <&qca8075_1>;
++	label = "wan";
++};
++
++&dp3 {
++	status = "okay";
++	phy-handle = <&qca8075_2>;
++	label = "lan2";
++};
++
++&dp4 {
++	status = "okay";
++	phy-handle = <&qca8075_3>;
++	label = "lan3";
++};
++
++&dp5 {
++	status = "okay";
++	phy-handle = <&qca8075_4>;
++	label = "lan4";
++};
+diff --git a/target/linux/qualcommax/image/ipq60xx.mk b/target/linux/qualcommax/image/ipq60xx.mk
+index 7a52f52099e..f44012f63db 100644
+--- a/target/linux/qualcommax/image/ipq60xx.mk
++++ b/target/linux/qualcommax/image/ipq60xx.mk
+@@ -123,6 +123,25 @@ define Device/jdcloud_re-ss-01
+ endef
+ TARGET_DEVICES += jdcloud_re-ss-01
+ 
++define Device/link_nn6000-v1
++	$(call Device/FitImage)
++	$(call Device/EmmcImage)
++	DEVICE_VENDOR := Link
++	DEVICE_MODEL := NN6000 v1
++	SOC := ipq6000
++	KERNEL_SIZE := 6144k
++	DEVICE_DTS_CONFIG := config@cp03-c1
++	DEVICE_PACKAGES := ipq-wifi-link_nn6000 kmod-fs-f2fs f2fs-tools
++	IMAGE/factory.bin := append-kernel | pad-to $$(KERNEL_SIZE) | append-rootfs | append-metadata
++endef
++TARGET_DEVICES += link_nn6000-v1
++
++define Device/link_nn6000-v2
++	$(Device/link_nn6000-v1)
++	DEVICE_MODEL := NN6000 v2
++endef
++TARGET_DEVICES += link_nn6000-v2
++
+ define Device/linksys_mr
+ 	$(call Device/FitImage)
+ 	DEVICE_VENDOR := Linksys
+diff --git a/target/linux/qualcommax/ipq60xx/base-files/etc/board.d/02_network b/target/linux/qualcommax/ipq60xx/base-files/etc/board.d/02_network
+index 558c68dacc0..f867c373237 100644
+--- a/target/linux/qualcommax/ipq60xx/base-files/etc/board.d/02_network
++++ b/target/linux/qualcommax/ipq60xx/base-files/etc/board.d/02_network
+@@ -12,7 +12,8 @@ ipq60xx_setup_interfaces()
+ 
+ 	case "$board" in
+ 	8devices,mango-dvk|\
+-	glinet,gl-axt1800)
++	glinet,gl-axt1800|\
++	link,nn6000-v1)
+ 		ucidef_set_interfaces_lan_wan "lan1 lan2" "wan"
+ 		;;
+ 	alfa-network,ap120c-ax)
+@@ -24,6 +25,7 @@ ipq60xx_setup_interfaces()
+ 		;;
+ 	glinet,gl-ax1800|\
+ 	jdcloud,re-cs-02|\
++	link,nn6000-v2|\
+ 	linksys,mr7350|\
+ 	linksys,mr7500|\
+ 	yuncore,fap650)
+diff --git a/target/linux/qualcommax/ipq60xx/base-files/etc/hotplug.d/firmware/11-ath11k-caldata b/target/linux/qualcommax/ipq60xx/base-files/etc/hotplug.d/firmware/11-ath11k-caldata
+index 14ab459e664..0b6f56cca3c 100644
+--- a/target/linux/qualcommax/ipq60xx/base-files/etc/hotplug.d/firmware/11-ath11k-caldata
++++ b/target/linux/qualcommax/ipq60xx/base-files/etc/hotplug.d/firmware/11-ath11k-caldata
+@@ -34,6 +34,14 @@ case "$FIRMWARE" in
+ 	jdcloud,re-ss-01)
+ 		caldata_extract_mmc "0:ART" 0x1000 0x10000
+ 		;;
++	link,nn6000-v1|\
++	link,nn6000-v2)
++		caldata_extract_mmc "0:ART" 0x1000 0x10000
++		label_mac=$(mmc_get_mac_binary 0:ART 18)
++		ath11k_patch_mac $(macaddr_add $label_mac -4) 0
++		ath11k_patch_mac $(macaddr_add $label_mac -5) 1
++		ath11k_set_macflag
++		;;
+ 	linksys,mr7350|\
+ 	linksys,mr7500)
+ 		caldata_extract "0:art" 0x1000 0x10000
+diff --git a/target/linux/qualcommax/ipq60xx/base-files/lib/upgrade/platform.sh b/target/linux/qualcommax/ipq60xx/base-files/lib/upgrade/platform.sh
+index 6b36fe62586..c58ca565ed7 100644
+--- a/target/linux/qualcommax/ipq60xx/base-files/lib/upgrade/platform.sh
++++ b/target/linux/qualcommax/ipq60xx/base-files/lib/upgrade/platform.sh
+@@ -125,7 +125,9 @@ platform_do_upgrade() {
+ 		;;
+ 	jdcloud,re-cs-02|\
+ 	jdcloud,re-cs-07|\
+-	jdcloud,re-ss-01)
++	jdcloud,re-ss-01|\
++	link,nn6000-v1|\
++	link,nn6000-v2)
+ 		local cfgpart=$(find_mmc_part "0:BOOTCONFIG")
+ 		part_num="$(hexdump -e '1/1 "%01x|"' -n 1 -s 148 -C $cfgpart | cut -f 1 -d "|" | head -n1)"
+ 		if [ "$part_num" -eq "1" ]; then

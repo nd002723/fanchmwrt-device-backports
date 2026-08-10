@@ -1,0 +1,261 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: John Christoforidis <github@yanny.dev>
+Date: Thu, 8 Jan 2026 22:13:27 +0200
+Subject: [PATCH 08/76] qualcommax: ipq60xx: add support for TP-Link EAP620HD
+ v3
+
+Specifications:
+  * SoC: Qualcomm IPQ6018/AP-CP03-C1 (64-bit Quad-core Arm Cortex-A53 @ 1.2 GHz)
+  * RAM: 2x Zentel A3T4GF40BBF-HP (1 GiB DDR3-1866 (13-13-13))
+  * Serial Port: 1v8 TTL 115200n8
+  * Wi-Fi: Qualcomm QCN5022 (802.11ax/b/g/n)
+  * Wi-Fi: Qualcomm QCN5052 (802.11ac/ax/n)
+  * Ethernet: RTL8211FS (10/100/1000BASE-T)
+  * Flash: GigaDevice PSR1GA30DT (128 MiB)
+  * LEDs: 1x Blue Status (GPIO 35 Active High)
+  * Buttons: 1x Reset (GPIO 9 Active Low)
+  * FCCID: 2AXJ4EAP620HDV3
+  * UART: 4-pin unpopulated header by the J1 footprint
+
+Installation Instructions (Serial+TFTP):
+  1. Locate the J1 footprint which contains 4 unpopulated pins
+  where starting from the arrow, the pins are TX, RX, VCC and GND
+  respectively.
+  2. Connect a 1v8 TTL port to the 4 pins. Ensure RX and TX are crossed
+     over.
+  3. Copy openwrt-qualcommax-ipq60xx-tplink_eap620-hd-v3-initramfs-uImage.itb
+  to your TFTP server.
+  4. Power up the AP and hold Ctrl+B in the serial console (115200n8) until autoboot is halted.
+  5. Run the following commands in the U-boot prompt:
+     IPQ6018# setenv serverip <TFTP server addr>
+     IPQ6018# setenv ipaddr <addr of the AP>
+     IPQ6018# tftpboot 0x44000000 openwrt-qualcommax-ipq60xx-tplink_eap620-hd-v3-initramfs-uImage.itb
+     IPQ6018# bootm 0x44000000
+     You may need to type Ctrl+C and Enter before running these commands
+     to clear invisible characters from the buffer.
+  6. Run the following command in a terminal to copy the sysupgrade image
+     to be installed (check IP address):
+     $ scp -O openwrt-qualcommax-ipq60xx-tplink_eap620-hd-v3-squashfs-sysupgrade.bin root@192.168.1.1:/tmp/
+  7. Activate the OpenWrt serial console and run the following commands:
+     # cd /tmp
+     # sysupgrade -n openwrt-qualcommax-ipq60xx-tplink_eap620-hd-v3-squashfs-sysupgrade.bin
+  8. The AP will reboot and OpenWrt will be successfully installed.
+
+Installation Instructions (Web UI method):
+  1. Set up the device using the vendor's web UI. Navigate to
+     Management->SSH and enable the "SSH Login" checkbox. Select "Save".
+
+  2. Connect to the machine via SSH:
+     $ ssh -o hostkeyalgorithms=ssh-rsa <ip_of_device>
+
+  3. Disable signature verification:
+     $ cliclientd stopcs
+  4. Rename the "-web-ui-factory" image to something less than 63
+     characters, maintaining the ".bin" suffix.
+
+  5. Go to System -> Firmware Update.
+     Under "New Firmware File", click "Browse" and select the image.
+     Select "Update" and confirm by clicking "OK".
+
+  6. If the update fails, the web UI should show an error message.
+     Otherwise, the device should reboot into OpenWrt.
+
+Device support followed from EAP620HD v2 and eap6xx-outdoor for DTS.
+Links: openwrt/openwrt#18227
+
+Signed-off-by: John Christoforidis <github@yanny.dev>
+Link: https://github.com/openwrt/openwrt/pull/21467
+Signed-off-by: Robert Marko <robimarko@gmail.com>
+---
+ .../uboot-envtools/files/qualcommax_ipq60xx   |  1 +
+ package/firmware/ipq-wifi/Makefile            |  2 +
+ .../boot/dts/qcom/ipq6018-eap620-hd-v3.dts    | 50 +++++++++++++++++++
+ target/linux/qualcommax/image/ipq60xx.mk      | 20 ++++++++
+ .../ipq60xx/base-files/etc/board.d/02_network |  2 +
+ .../etc/hotplug.d/firmware/11-ath11k-caldata  |  7 +++
+ .../lib/preinit/09_mount_factory_data         |  1 +
+ .../base-files/lib/upgrade/platform.sh        |  1 +
+ 8 files changed, 84 insertions(+)
+ create mode 100644 target/linux/qualcommax/files/arch/arm64/boot/dts/qcom/ipq6018-eap620-hd-v3.dts
+
+diff --git a/package/boot/uboot-tools/uboot-envtools/files/qualcommax_ipq60xx b/package/boot/uboot-tools/uboot-envtools/files/qualcommax_ipq60xx
+index a06ffc1f36c..f56c75b0f16 100644
+--- a/package/boot/uboot-tools/uboot-envtools/files/qualcommax_ipq60xx
++++ b/package/boot/uboot-tools/uboot-envtools/files/qualcommax_ipq60xx
+@@ -24,6 +24,7 @@ netgear,wax610|\
+ netgear,wax610y|\
+ tplink,eap610-outdoor|\
+ tplink,eap623od-hd-v1|\
++tplink,eap620-hd-v3|\
+ tplink,eap625-outdoor-hd-v1)
+ 	ubootenv_add_mtd "0:appsblenv" "0x0" "0x40000" "0x20000"
+ 	;;
+diff --git a/package/firmware/ipq-wifi/Makefile b/package/firmware/ipq-wifi/Makefile
+index 469036ecd39..398915b961d 100644
+--- a/package/firmware/ipq-wifi/Makefile
++++ b/package/firmware/ipq-wifi/Makefile
+@@ -84,6 +84,7 @@ ALLWIFIBOARDS:= \
+ 	tplink_deco-x80-5g \
+ 	tplink_eap610-outdoor \
+ 	tplink_eap620hd-v1 \
++	tplink_eap620-hd-v3 \
+ 	tplink_eap623-outdoor-hd-v1 \
+ 	tplink_eap625-outdoor-hd-v1 \
+ 	tplink_eap660hd-v1 \
+@@ -270,6 +271,7 @@ $(eval $(call generate-ipq-wifi-package,spectrum_sax1v1k,Spectrum SAX1V1K))
+ $(eval $(call generate-ipq-wifi-package,tplink_deco-x80-5g,TP-Link Deco X80-5G))
+ $(eval $(call generate-ipq-wifi-package,tplink_eap610-outdoor,TPLink EAP610-Outdoor))
+ $(eval $(call generate-ipq-wifi-package,tplink_eap620hd-v1,TP-Link EAP620 HD v1))
++$(eval $(call generate-ipq-wifi-package,tplink_eap620-hd-v3,TP-Link EAP620 HD v3))
+ $(eval $(call generate-ipq-wifi-package,tplink_eap623-outdoor-hd-v1,TP-Link EAP623-Outdoor HD v1))
+ $(eval $(call generate-ipq-wifi-package,tplink_eap625-outdoor-hd-v1,TP-Link EAP625-Outdoor HD v1))
+ $(eval $(call generate-ipq-wifi-package,tplink_eap660hd-v1,TP-Link EAP660 HD v1))
+diff --git a/target/linux/qualcommax/files/arch/arm64/boot/dts/qcom/ipq6018-eap620-hd-v3.dts b/target/linux/qualcommax/files/arch/arm64/boot/dts/qcom/ipq6018-eap620-hd-v3.dts
+new file mode 100644
+index 00000000000..fd7b9c54a73
+--- /dev/null
++++ b/target/linux/qualcommax/files/arch/arm64/boot/dts/qcom/ipq6018-eap620-hd-v3.dts
+@@ -0,0 +1,50 @@
++// SPDX-License-Identifier: GPL-2.0-or-later OR MIT
++
++/dts-v1/;
++
++#include "ipq6018-tplink-eap6xx-outdoor.dtsi"
++
++/ {
++	model = "TP-Link EAP620HD v3";
++	compatible = "tplink,eap620-hd-v3", "qcom,ipq6018";
++
++	/* Delete EAP6xx outdoor leds node to redefine it. */
++	/delete-node/ leds;
++
++	aliases {
++		led-boot = &led_status_blue;
++		led-failsafe = &led_status_blue;
++		led-running = &led_status_blue;
++		led-upgrade = &led_status_blue;
++	};
++
++	leds {
++		compatible = "gpio-leds";
++
++		led_status_blue: status-blue {
++			function = LED_FUNCTION_STATUS;
++			gpios = <&tlmm 35 GPIO_ACTIVE_HIGH>;
++			color = <LED_COLOR_ID_BLUE>;
++		};
++	};
++};
++
++&mdio {
++	rtl8211f_4: ethernet-phy@4 {
++		reg = <4>;
++		compatible = "ethernet-phy-ieee802.3-c22";
++	};
++};
++
++&tlmm {
++	gpio-reserved-ranges = <20 1>;
++};
++
++&switch {
++	switch_mac_mode1 = <MAC_MODE_SGMII_PLUS>;
++};
++
++&wifi {
++	qcom,ath11k-calibration-variant = "TP-Link-EAP620-HD-v3";
++	status = "okay";
++};
+diff --git a/target/linux/qualcommax/image/ipq60xx.mk b/target/linux/qualcommax/image/ipq60xx.mk
+index c9e0569bbd7..ecaa8479a06 100644
+--- a/target/linux/qualcommax/image/ipq60xx.mk
++++ b/target/linux/qualcommax/image/ipq60xx.mk
+@@ -251,6 +251,26 @@ define Device/tplink_eap625-outdoor-hd-v1
+ endef
+ TARGET_DEVICES += tplink_eap625-outdoor-hd-v1
+ 
++define Device/tplink_eap620-hd-v3
++	$(call Device/FitImage)
++	$(call Device/UbiFit)
++	DEVICE_VENDOR := TP-Link
++	DEVICE_MODEL := EAP620 HD v3
++	BLOCKSIZE := 128k
++	PAGESIZE := 2048
++	SOC := ipq6018
++	DEVICE_PACKAGES := ipq-wifi-tplink_eap620-hd-v3
++	IMAGES += web-ui-factory.bin
++	IMAGE/web-ui-factory.bin := append-ubi | tplink-image-2022
++	TPLINK_SUPPORT_STRING := SupportList:\r\n \
++		EAP620 HD(TP-Link|UN|AX1800-D):3.0\r\n \
++		EAP620 HD(TP-Link|CA|AX1800-D):3.0\r\n \
++		EAP620 HD(TP-Link|JP|AX1800-D):3.0\r\n \
++		EAP620 HD(TP-Link|EG|AX1800-D):3.0\r\n
++
++endef
++TARGET_DEVICES += tplink_eap620-hd-v3
++
+ define Device/yuncore_fap650
+ 	$(call Device/FitImage)
+ 	$(call Device/UbiFit)
+diff --git a/target/linux/qualcommax/ipq60xx/base-files/etc/board.d/02_network b/target/linux/qualcommax/ipq60xx/base-files/etc/board.d/02_network
+index f8a43d84f4e..ceafb4027bd 100644
+--- a/target/linux/qualcommax/ipq60xx/base-files/etc/board.d/02_network
++++ b/target/linux/qualcommax/ipq60xx/base-files/etc/board.d/02_network
+@@ -40,6 +40,7 @@ ipq60xx_setup_interfaces()
+ 	netgear,wax610y|\
+ 	tplink,eap610-outdoor|\
+ 	tplink,eap623od-hd-v1|\
++	tplink,eap620-hd-v3|\
+ 	tplink,eap625-outdoor-hd-v1)
+ 		ucidef_set_interface_lan "lan" "dhcp"
+ 		;;
+@@ -66,6 +67,7 @@ ipq60xx_setup_macs()
+ 		label_mac=$lan_mac
+ 		;;
+ 	tplink,eap610-outdoor|\
++	tplink,eap620-hd-v3|\
+ 	tplink,eap623od-hd-v1|\
+ 	tplink,eap625-outdoor-hd-v1)
+ 		label_mac=$(get_mac_binary /tmp/factory_data/default-mac 0)
+diff --git a/target/linux/qualcommax/ipq60xx/base-files/etc/hotplug.d/firmware/11-ath11k-caldata b/target/linux/qualcommax/ipq60xx/base-files/etc/hotplug.d/firmware/11-ath11k-caldata
+index a8ac052dc48..5ed4f5966f0 100644
+--- a/target/linux/qualcommax/ipq60xx/base-files/etc/hotplug.d/firmware/11-ath11k-caldata
++++ b/target/linux/qualcommax/ipq60xx/base-files/etc/hotplug.d/firmware/11-ath11k-caldata
+@@ -70,6 +70,13 @@ case "$FIRMWARE" in
+ 		ath11k_patch_mac $(macaddr_add $label_mac 1) 0
+ 		ath11k_set_macflag
+ 		;;
++	tplink,eap620-hd-v3)
++		caldata_from_file "/tmp/factory_data/radio" 0 0x20000
++		label_mac=$(get_mac_binary /tmp/factory_data/default-mac 0)
++		ath11k_patch_mac $label_mac 1
++		ath11k_patch_mac $(macaddr_add $label_mac 1) 0
++		ath11k_set_macflag
++		;;
+ 	yuncore,fap650)
+ 		caldata_extract "0:art" 0x1000 0x20000
+ 		;;
+diff --git a/target/linux/qualcommax/ipq60xx/base-files/lib/preinit/09_mount_factory_data b/target/linux/qualcommax/ipq60xx/base-files/lib/preinit/09_mount_factory_data
+index a37050f4079..09ca32f08c4 100644
+--- a/target/linux/qualcommax/ipq60xx/base-files/lib/preinit/09_mount_factory_data
++++ b/target/linux/qualcommax/ipq60xx/base-files/lib/preinit/09_mount_factory_data
+@@ -8,6 +8,7 @@ preinit_mount_factory_data() {
+ 
+ 	case $(board_name) in
+ 	tplink,eap610-outdoor|\
++	tplink,eap620-hd-v3|\
+ 	tplink,eap623od-hd-v1|\
+ 	tplink,eap625-outdoor-hd-v1)
+ 		mtd_path=$(find_mtd_chardev "factory_data")
+diff --git a/target/linux/qualcommax/ipq60xx/base-files/lib/upgrade/platform.sh b/target/linux/qualcommax/ipq60xx/base-files/lib/upgrade/platform.sh
+index 925a6d6fd46..27f34ae1dfb 100644
+--- a/target/linux/qualcommax/ipq60xx/base-files/lib/upgrade/platform.sh
++++ b/target/linux/qualcommax/ipq60xx/base-files/lib/upgrade/platform.sh
+@@ -157,6 +157,7 @@ platform_do_upgrade() {
+ 		nand_do_upgrade "$1"
+ 		;;
+ 	tplink,eap610-outdoor|\
++	tplink,eap620-hd-v3|\
+ 	tplink,eap623od-hd-v1|\
+ 	tplink,eap625-outdoor-hd-v1)
+ 		tplink_do_upgrade "$1"

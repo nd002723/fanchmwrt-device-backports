@@ -1,0 +1,383 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: xingchi <juncaixingchi2026@gmail.com>
+Date: Tue, 13 Jan 2026 16:01:20 +0800
+Subject: [PATCH 23/76] ramips: add support for Z-ROUTER ZR-2662
+
+This commit adds support for Z-ROUTER ZR-2662 (also known as Routerich
+AX1800 V2) wireless WiFi 6 router.
+
+Hardware specification
+---------------------
+- SoC       : MediaTek MT7621AT, MIPS, 880 MHz
+- RAM       : 256 MiB
+- Flash     : NAND 128 MiB (AMD/Spansion S34ML01G2)
+- WLAN      :
+  - 2.4 GHz : MediaTek MT7905D/MT7975 (14c3:7916), b/g/n/ax, MIMO 2x2
+  - 5 GHz   : MediaTek MT7915E (14c3:7915), a/n/ac/ax, MIMO 2x2
+- Ethernet  : 10/100/1000 Mbps x4 (1x WAN, 3x LAN)
+- USB       : 1x 2.0
+- UART      : 3.3V, 115200n8, pins are silkscreened on the pcb
+- Buttons   : 1x Reset
+- LEDs      : 1x WiFi 2.4 GHz (green)
+              1x WiFi 5 GHz (green)
+              1x LAN (green)
+              1x WAN (green)
+              1x WAN no-internet (red)
+- Power     : 12 VDC, 1 A
+
+Installation
+------------
+1. Run tftp server on your PC (IP: 192.168.2.2) and put OpenWrt initramfs
+   image (initramfs.bin) to the tftp root dir
+2. Open the following link in the browser to enable telnet:
+	http://192.168.2.1/cgi-bin/telnet_ssh
+3. Connect to the router (default IP: 192.168.2.1) using telnet shell
+   (credentials - user:admin)
+4. Run the following commands in the telnet shell (this will install
+   OpenWrt initramfs image on nand flash):
+	cd /tmp
+	tftp -g -r initramfs.bin 192.168.2.2
+	mtd write initramfs.bin firmware
+	mtd erase firmware_backup
+	reboot
+5. Copy OpenWrt sysupgrade image (sysupgrade.bin) to the /tmp dir of the
+   router
+6. Connect to the router (IP: 192.168.1.1) using ssh shell and run
+   sysupgrade command:
+	sysupgrade -n /tmp/sysupgrade.bin
+
+Return to stock
+---------------
+1. Copy stock firmware (stock.bin) to the /tmp dir of the router using scp
+2. Run following command in the router shell:
+	cd /tmp
+	mtd write stock.bin firmware
+	reboot
+
+Recovery
+--------
+Connect uart (pins are silkscreened on the pcb), interrupt boot process by
+pressing any key, use u-boot menu to flash stock firmware image or OpenWrt
+initramfs image.
+
+MAC addresses
+-------------
++---------+-------------------+-----------+
+|         | MAC               | Algorithm |
++---------+-------------------+-----------+
+| LAN     | 24:0f:5e:xx:xx:4c | label     |
+| WAN     | 24:0f:5e:xx:xx:4d | label+1   |
+| WLAN 2g | 24:0f:5e:xx:xx:4e | label+2   |
+| WLAN 5g | 24:0f:5e:xx:xx:4f | label+3   |
++---------+-------------------+-----------+
+The WLAN 2.4 MAC was found in 'factory', 0x4
+The LAN MAC was found in 'factory', 0xfff4
+The WAN MAC was found in 'factory', 0xfffa
+
+Note: This device is similar to Z-ROUTER ZR-2660, but with minor hardware
+revisions. The firmware and configuration are compatible.
+
+Signed-off-by: xingchi <juncaixingchi2026@gmail.com>
+Link: https://github.com/openwrt/openwrt/pull/21524
+Signed-off-by: Hauke Mehrtens <hauke@hauke-m.de>
+---
+ .../ramips/dts/mt7621_z-router_zr-2662.dts    | 223 ++++++++++++++++++
+ target/linux/ramips/image/mt7621.mk           |  13 +
+ .../mt7621/base-files/etc/board.d/01_leds     |   4 +
+ .../mt7621/base-files/etc/board.d/02_network  |   1 +
+ .../mt7621/base-files/lib/upgrade/platform.sh |   1 +
+ 5 files changed, 242 insertions(+)
+ create mode 100644 target/linux/ramips/dts/mt7621_z-router_zr-2662.dts
+
+diff --git a/target/linux/ramips/dts/mt7621_z-router_zr-2662.dts b/target/linux/ramips/dts/mt7621_z-router_zr-2662.dts
+new file mode 100644
+index 00000000000..8b5e7871d95
+--- /dev/null
++++ b/target/linux/ramips/dts/mt7621_z-router_zr-2662.dts
+@@ -0,0 +1,223 @@
++// SPDX-License-Identifier: GPL-2.0-or-later OR MIT
++
++#include "mt7621.dtsi"
++
++#include <dt-bindings/gpio/gpio.h>
++#include <dt-bindings/input/input.h>
++#include <dt-bindings/leds/common.h>
++
++/ {
++	compatible = "z-router,zr-2662", "mediatek,mt7621-soc";
++	model = "Z-ROUTER ZR-2662";
++
++	aliases {
++		label-mac-device = &gmac0;
++
++		led-boot = &led_power_green;
++		led-failsafe = &led_power_green;
++		led-running = &led_power_green;
++		led-upgrade = &led_power_green;
++	};
++
++	chosen {
++		bootargs = "console=ttyS0,115200";
++	};
++
++	keys {
++		compatible = "gpio-keys";
++
++		key-0 {
++			label = "reset";
++			gpios = <&gpio 16 GPIO_ACTIVE_HIGH>;
++			linux,code = <KEY_RESTART>;
++			debounce-interval = <60>;
++		};
++
++		key-1 {
++			label = "wps";
++			gpios = <&gpio 18 GPIO_ACTIVE_HIGH>;
++			linux,code = <KEY_WPS_BUTTON>;
++			debounce-interval = <60>;
++		};
++	};
++
++	leds {
++		compatible = "gpio-leds";
++
++		led-0 {
++			color = <LED_COLOR_ID_GREEN>;
++			function = LED_FUNCTION_WAN;
++			gpios = <&gpio 6 GPIO_ACTIVE_LOW>;
++		};
++
++		led-1 {
++			color = <LED_COLOR_ID_GREEN>;
++			function = LED_FUNCTION_WLAN;
++			function-enumerator = <50>;
++			gpios = <&gpio 7 GPIO_ACTIVE_LOW>;
++			linux,default-trigger = "phy1tpt";
++		};
++
++		led-2 {
++			color = <LED_COLOR_ID_RED>;
++			function = LED_FUNCTION_WAN;
++			gpios = <&gpio 4 GPIO_ACTIVE_HIGH>;
++		};
++
++		led-3 {
++			color = <LED_COLOR_ID_GREEN>;
++			function = LED_FUNCTION_WPS;
++			gpios = <&gpio 3 GPIO_ACTIVE_LOW>;
++		};
++
++		led_power_green: led-4 {
++			color = <LED_COLOR_ID_GREEN>;
++			function = LED_FUNCTION_POWER;
++			gpios = <&gpio 15 GPIO_ACTIVE_LOW>;
++		};
++	};
++};
++
++&gmac0 {
++	nvmem-cells = <&macaddr_factory_3fff4>;
++	nvmem-cell-names = "mac-address";
++};
++
++&gmac1 {
++	status = "okay";
++	label = "wan";
++	phy-handle = <&ethphy4>;
++
++	nvmem-cells = <&macaddr_factory_3fffa>;
++	nvmem-cell-names = "mac-address";
++};
++
++&ethphy4 {
++	/delete-property/ interrupts;
++};
++
++&nand {
++	status = "okay";
++
++	mediatek,nmbm;
++	mediatek,bmt-max-ratio = <1>;
++	mediatek,bmt-max-reserved-blocks = <64>;
++
++	partitions {
++		compatible = "fixed-partitions";
++		#address-cells = <1>;
++		#size-cells = <1>;
++
++		partition@0 {
++			label = "u-boot";
++			reg = <0x0 0x80000>;
++			read-only;
++		};
++
++		partition@80000 {
++			label = "Config";
++			reg = <0x80000 0x80000>;
++			read-only;
++		};
++
++		partition@100000 {
++			label = "factory";
++			reg = <0x100000 0x80000>;
++			read-only;
++
++			nvmem-layout {
++				compatible = "fixed-layout";
++				#address-cells = <1>;
++				#size-cells = <1>;
++
++				eeprom_factory_0: eeprom@0 {
++					reg = <0x0 0xe00>;
++				};
++
++				macaddr_factory_4: macaddr@4 {
++					compatible = "mac-base";
++					reg = <0x4 0x6>;
++					#nvmem-cell-cells = <1>;
++				};
++
++				macaddr_factory_3fff4: macaddr@3fff4 {
++					reg = <0x3fff4 0x6>;
++				};
++
++				macaddr_factory_3fffa: macaddr@3fffa {
++					reg = <0x3fffa 0x6>;
++				};
++			};
++		};
++
++		partition@180000 {
++			label = "firmware";
++			reg = <0x180000 0x7680000>;
++
++			compatible = "fixed-partitions";
++			#address-cells = <1>;
++			#size-cells = <1>;
++
++			partition@0 {
++				label = "kernel";
++				reg = <0x0 0x400000>;
++			};
++
++			partition@400000 {
++				label = "ubi";
++				reg = <0x400000 0x7280000>;
++			};
++		};
++	};
++};
++
++&pcie {
++	status = "okay";
++};
++
++&pcie1 {
++	wifi@0,0 {
++		compatible = "mediatek,mt76";
++		reg = <0x0000 0 0 0 0>;
++
++		mediatek,disable-radar-background;
++
++		nvmem-cells = <&eeprom_factory_0>;
++		nvmem-cell-names = "eeprom";
++
++		#address-cells = <1>;
++		#size-cells = <0>;
++
++		band@1 {
++			reg = <1>;
++			nvmem-cells = <&macaddr_factory_4 1>;
++			nvmem-cell-names = "mac-address";
++		};
++	};
++};
++
++&state_default {
++	gpio {
++		groups = "i2c", "uart3", "jtag", "wdt";
++		function = "gpio";
++	};
++};
++
++&switch0 {
++	ports {
++		port@1 {
++			status = "okay";
++			label = "lan1";
++		};
++
++		port@2 {
++			status = "okay";
++			label = "lan2";
++		};
++
++		port@3 {
++			status = "okay";
++			label = "lan3";
++		};
++	};
++};
+diff --git a/target/linux/ramips/image/mt7621.mk b/target/linux/ramips/image/mt7621.mk
+index 9830112b6e5..26a54b5b1af 100644
+--- a/target/linux/ramips/image/mt7621.mk
++++ b/target/linux/ramips/image/mt7621.mk
+@@ -3622,6 +3622,19 @@ define Device/z-router_zr-2660
+ endef
+ TARGET_DEVICES += z-router_zr-2660
+ 
++define Device/z-router_zr-2662
++  $(Device/dsa-migration)
++  $(Device/nand)
++  DEVICE_VENDOR := Z-ROUTER
++  DEVICE_MODEL := ZR-2662
++  IMAGE_SIZE := 121344k
++  KERNEL_LOADADDR := 0x82000000
++  KERNEL := kernel-bin | relocate-kernel $(loadaddr-y) | lzma | \
++	fit lzma $$(KDIR)/image-$$(firstword $$(DEVICE_DTS)).dtb
++  DEVICE_PACKAGES += kmod-mt7915-firmware kmod-usb3 -uboot-envtools
++endef
++TARGET_DEVICES += z-router_zr-2662
++
+ define Device/zbtlink_zbt-we1326
+   $(Device/dsa-migration)
+   $(Device/uimage-lzma-loader)
+diff --git a/target/linux/ramips/mt7621/base-files/etc/board.d/01_leds b/target/linux/ramips/mt7621/base-files/etc/board.d/01_leds
+index ee89f1a5cd3..eb4de3e03df 100644
+--- a/target/linux/ramips/mt7621/base-files/etc/board.d/01_leds
++++ b/target/linux/ramips/mt7621/base-files/etc/board.d/01_leds
+@@ -278,6 +278,10 @@ z-router,zr-2660)
+ 	ucidef_set_led_netdev "wan" "wan" "green:wan" "wan" "link tx rx"
+ 	ucidef_set_led_netdev "wan-off" "wan-off" "red:wan" "wan" "link"
+ 	;;
++z-router,zr-2662)
++	ucidef_set_led_netdev "wan" "wan" "green:wan" "wan" "link tx rx"
++	ucidef_set_led_netdev "wan-off" "wan-off" "red:wan" "wan" "link"
++	;;
+ zyxel,lte3301-plus)
+ 	ucidef_set_led_netdev "internet" "internet" "white:internet" "wwan0"
+ 	;;
+diff --git a/target/linux/ramips/mt7621/base-files/etc/board.d/02_network b/target/linux/ramips/mt7621/base-files/etc/board.d/02_network
+index 8556a2af91c..69d954aaf08 100644
+--- a/target/linux/ramips/mt7621/base-files/etc/board.d/02_network
++++ b/target/linux/ramips/mt7621/base-files/etc/board.d/02_network
+@@ -34,6 +34,7 @@ ramips_setup_interfaces()
+ 	xiaomi,mi-router-cr6609|\
+ 	xiaomi,redmi-router-ac2100|\
+ 	z-router,zr-2660|\
++	z-router,zr-2662|\
+ 	zyxel,wsm20)
+ 		ucidef_set_interfaces_lan_wan "lan1 lan2 lan3" "wan"
+ 		;;
+diff --git a/target/linux/ramips/mt7621/base-files/lib/upgrade/platform.sh b/target/linux/ramips/mt7621/base-files/lib/upgrade/platform.sh
+index f81d5102fb8..f91f82d76c3 100644
+--- a/target/linux/ramips/mt7621/base-files/lib/upgrade/platform.sh
++++ b/target/linux/ramips/mt7621/base-files/lib/upgrade/platform.sh
+@@ -157,6 +157,7 @@ platform_do_upgrade() {
+ 	xiaomi,mi-router-cr6609|\
+ 	xiaomi,redmi-router-ac2100|\
+ 	z-router,zr-2660|\
++	z-router,zr-2662|\
+ 	zyxel,nwa50ax|\
+ 	zyxel,nwa55axe)
+ 		nand_do_upgrade "$1"

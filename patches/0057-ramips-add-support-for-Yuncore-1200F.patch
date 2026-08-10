@@ -1,0 +1,324 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Gunther Stammwitz <gstammw@gmx.net>
+Date: Mon, 1 Jun 2026 18:00:29 +0200
+Subject: [PATCH 57/76] ramips: add support for Yuncore 1200F
+
+The Yuncore 1200F is an outdoor 802.11ac access point based on the
+MediaTek MT7628AN SoC with an MT7663E PCIe 5 GHz radio. The device is
+also sold under the KuWFi AP1200F name.
+
+Hardware:
+- SoC: MediaTek MT7628AN
+- CPU: MIPS 24KEc
+- RAM: 64 MiB
+- Flash: 8 MiB SPI NOR
+- Ethernet: 2x 10/100 Mbps
+- WiFi 2.4 GHz: MT7628AN WMAC
+- WiFi 5 GHz: MT7663E PCIe
+- LEDs: status, LAN, WAN
+- Button: reset
+- Watchdog: GPIO watchdog
+
+MAC addresses:
+- Ethernet: factory 0x0004
+- 2.4 GHz WiFi: factory 0x0028
+- 5 GHz WiFi: factory 0x8004
+
+Network:
+- LAN: eth0.1, switch port 4
+- WAN: eth0.2, switch port 3
+
+Installation:
+- Build the sysupgrade image:
+  openwrt-ramips-mt76x8-yuncore_1200f-squashfs-sysupgrade.bin
+- The stock firmware provides a U-Boot recovery web interface. It can be
+  entered by holding the reset button while powering on the device. Connect to
+  http://192.168.0.100/ and upload openwrt-sysupgrade.bin file.
+
+Recovery:
+- Reverting to stock firmware has not been tested.
+
+The 5 GHz radio is detected as PCI ID 14c3:7663 and uses mt7615e
+together with the MT7663 AP firmware. kmod-mt76x2 is explicitly
+excluded because this board uses MT7663E, not MT76x2.
+
+Tested:
+- Build succeeds for ramips/mt76x8
+- Sysupgrade image boots
+- Ethernet LAN/WAN work
+- 2.4 GHz AP starts on phy0
+- 5 GHz AP starts on phy1
+- Stable MAC addresses are assigned to Ethernet, phy0 and phy1
+
+Signed-off-by: Gunther Stammwitz <gstammw@gmx.net>
+Link: https://github.com/openwrt/openwrt/pull/23613
+Signed-off-by: Jonas Jelonek <jelonek.jonas@gmail.com>
+---
+ .../ramips/dts/mt7628an_yuncore_1200f.dts     | 206 ++++++++++++++++++
+ target/linux/ramips/image/mt76x8.mk           |  11 +
+ .../mt76x8/base-files/etc/board.d/01_leds     |   4 +
+ .../mt76x8/base-files/etc/board.d/02_network  |   4 +
+ 4 files changed, 225 insertions(+)
+ create mode 100644 target/linux/ramips/dts/mt7628an_yuncore_1200f.dts
+
+diff --git a/target/linux/ramips/dts/mt7628an_yuncore_1200f.dts b/target/linux/ramips/dts/mt7628an_yuncore_1200f.dts
+new file mode 100644
+index 00000000000..054a6774bee
+--- /dev/null
++++ b/target/linux/ramips/dts/mt7628an_yuncore_1200f.dts
+@@ -0,0 +1,206 @@
++#include "mt7628an.dtsi"
++
++#include <dt-bindings/gpio/gpio.h>
++#include <dt-bindings/input/input.h>
++#include <dt-bindings/leds/common.h>
++
++/ {
++	compatible = "yuncore,1200f", "mediatek,mt7628an-soc";
++	model = "Yuncore 1200F";
++
++	chosen {
++		bootargs = "console=ttyS0,57600";
++	};
++
++	keys {
++		compatible = "gpio-keys";
++
++		reset {
++			label = "reset";
++			gpios = <&gpio 38 GPIO_ACTIVE_LOW>;
++			linux,code = <KEY_RESTART>;
++		};
++	};
++
++	aliases {
++		label-mac = &ethernet;
++		led-boot = &led_indicator;
++		led-failsafe = &led_indicator;
++		led-running = &led_indicator;
++		led-upgrade = &led_indicator;
++	};
++
++	leds {
++		compatible = "gpio-leds";
++
++		led_indicator: indicator {
++			color = <LED_COLOR_ID_GREEN>;
++			function = LED_FUNCTION_INDICATOR;
++			gpios = <&gpio 11 GPIO_ACTIVE_LOW>;
++		};
++
++		lan {
++			color = <LED_COLOR_ID_GREEN>;
++			function = LED_FUNCTION_LAN;
++			gpios = <&gpio 39 GPIO_ACTIVE_LOW>;
++		};
++
++		wan {
++			color = <LED_COLOR_ID_GREEN>;
++			function = LED_FUNCTION_WAN;
++			gpios = <&gpio 40 GPIO_ACTIVE_LOW>;
++		};
++
++		wlan2g {
++			color = <LED_COLOR_ID_GREEN>;
++			function = LED_FUNCTION_WLAN;
++			function-enumerator = <0>;
++			gpios = <&gpio 44 GPIO_ACTIVE_LOW>;
++			linux,default-trigger = "phy0radio";
++		};
++	};
++
++	watchdog {
++		compatible = "linux,wdt-gpio";
++		gpios = <&gpio 37 GPIO_ACTIVE_HIGH>;
++		hw_algo = "toggle";
++		hw_margin_ms = <20000>;
++		always-running;
++	};
++};
++
++&spi0 {
++	status = "okay";
++
++	flash@0 {
++		compatible = "jedec,spi-nor";
++		reg = <0>;
++		spi-max-frequency = <10000000>;
++
++		partitions {
++			compatible = "fixed-partitions";
++			#address-cells = <1>;
++			#size-cells = <1>;
++
++			partition@0 {
++				label = "u-boot";
++				reg = <0x0 0x30000>;
++				read-only;
++			};
++
++			partition@30000 {
++				label = "u-boot-env";
++				reg = <0x30000 0x10000>;
++				read-only;
++			};
++
++			partition@40000 {
++				label = "factory";
++				reg = <0x40000 0x10000>;
++				read-only;
++
++				nvmem-layout {
++					compatible = "fixed-layout";
++					#address-cells = <1>;
++					#size-cells = <1>;
++
++					eeprom_factory_0: eeprom@0 {
++						reg = <0x0 0x400>;
++					};
++
++					/*
++					 * Observed at factory + 0x4:
++					 * 9c:e5:49:60:2a:64
++					 */
++					macaddr_factory_4: macaddr@4 {
++						reg = <0x4 0x6>;
++					};
++
++					/*
++					 * Observed at factory + 0x28:
++					 * 9c:e5:49:60:2a:65
++					 */
++					macaddr_factory_28: macaddr@28 {
++						reg = <0x28 0x6>;
++					};
++
++					eeprom_factory_8000: eeprom@8000 {
++						reg = <0x8000 0x4da8>;
++					};
++
++					/*
++					 * Observed at factory + 0x8004:
++					 * 9c:e5:49:60:2a:66
++					 *
++					 * Do not apply mac-address-increment here.
++					 * The stored address is already the final 5 GHz MAC.
++					 */
++					macaddr_factory_8004: macaddr@8004 {
++						reg = <0x8004 0x6>;
++					};
++				};
++			};
++
++			partition@50000 {
++				compatible = "denx,uimage";
++				label = "firmware";
++				reg = <0x50000 0x7b0000>;
++			};
++		};
++	};
++};
++
++&ethernet {
++	nvmem-cells = <&macaddr_factory_4>;
++	nvmem-cell-names = "mac-address";
++};
++
++&esw {
++	mediatek,portmap = <0x2f>;
++};
++
++&wmac {
++	status = "okay";
++
++	nvmem-cells = <&eeprom_factory_0>, <&macaddr_factory_28>;
++	nvmem-cell-names = "eeprom", "mac-address";
++
++	/*
++	 * Allow full 2.4 GHz band. The previous upper limit of 2462000
++	 * caused channels 10-13 to appear disabled.
++	 */
++	ieee80211-freq-limit = <2400000 2500000>;
++};
++
++&state_default {
++	gpio {
++		groups = "pwm1", "pwm0", "uart2", "uart1", "i2c", "refclk",
++			 "sdmode", "i2s", "spi cs1", "spis",
++			 "gpio", "p0led_an", "p1led_an", "p2led_an", "p3led_an",
++			 "p4led_an", "wled_kn", "wled_an", "p0led_kn", "p1led_kn",
++			 "p2led_kn", "p3led_kn", "p4led_kn";
++		function = "gpio";
++	};
++
++};
++
++&pcie {
++	status = "okay";
++};
++
++&pcie0 {
++	wifi@0,0 {
++		compatible = "mediatek,mt76";
++		reg = <0x0000 0 0 0 0>;
++
++		nvmem-cells = <&eeprom_factory_8000>, <&macaddr_factory_8004>;
++		nvmem-cell-names = "eeprom", "mac-address";
++
++		ieee80211-freq-limit = <5000000 6000000>;
++
++		led {
++			led-sources = <2>;
++			led-active-low;
++		};
++	};
++};
+diff --git a/target/linux/ramips/image/mt76x8.mk b/target/linux/ramips/image/mt76x8.mk
+index ea9676a1762..6f7f382203f 100644
+--- a/target/linux/ramips/image/mt76x8.mk
++++ b/target/linux/ramips/image/mt76x8.mk
+@@ -1543,3 +1543,14 @@ define Device/teltonika_rut241
+   IMAGE/sysupgrade.bin := append-kernel | pad-to $$$$(BLOCKSIZE) | append-rootfs | pad-rootfs | check-size | append-metadata
+ endef
+ TARGET_DEVICES += teltonika_rut241
++
++define Device/yuncore_1200f
++  IMAGE_SIZE := 7872k
++  DEVICE_VENDOR := Yuncore
++  DEVICE_MODEL := 1200F
++  DEVICE_ALT0_VENDOR := KuWFi
++  DEVICE_ALT0_MODEL := AP1200F
++  SUPPORTED_DEVICES += yuncore,1200f
++  DEVICE_PACKAGES := kmod-mt7615e kmod-mt7663-firmware-ap -kmod-mt76x2 -kmod-mt76x2-common -kmod-mt76x02-common
++endef
++TARGET_DEVICES += yuncore_1200f
+diff --git a/target/linux/ramips/mt76x8/base-files/etc/board.d/01_leds b/target/linux/ramips/mt76x8/base-files/etc/board.d/01_leds
+index 89365fe4b45..5b85303cde2 100644
+--- a/target/linux/ramips/mt76x8/base-files/etc/board.d/01_leds
++++ b/target/linux/ramips/mt76x8/base-files/etc/board.d/01_leds
+@@ -24,6 +24,10 @@ yuncore,m300)
+ 	ucidef_set_led_switch "lan" "lan" "green:lan" "switch0" "0xf"
+ 	ucidef_set_led_switch "wan" "wan" "green:wan" "switch0" "0x10"
+ 	;;
++yuncore,1200f)
++	ucidef_set_led_switch "lan" "LAN" "green:lan" "switch0" "0x10"
++	ucidef_set_led_switch "wan" "WAN" "green:wan" "switch0" "0x08"
++	;;
+ creality,wb-01)
+ 	ucidef_set_led_switch "lan" "lan" "blue:lan" "switch0" "0x1"
+ 	;;
+diff --git a/target/linux/ramips/mt76x8/base-files/etc/board.d/02_network b/target/linux/ramips/mt76x8/base-files/etc/board.d/02_network
+index c410554aea1..ae05ffccc9b 100644
+--- a/target/linux/ramips/mt76x8/base-files/etc/board.d/02_network
++++ b/target/linux/ramips/mt76x8/base-files/etc/board.d/02_network
+@@ -258,6 +258,10 @@ ramips_setup_interfaces()
+ 		ucidef_add_switch "switch0" \
+ 			"0:lan:2" "2:lan:1" "4:wan" "6@eth0"
+ 		;;
++	yuncore,1200f)
++		ucidef_add_switch "switch0" \
++			"4:lan" "3:wan" "6@eth0"
++		;;
+ 	yuncore,cpe200)
+ 		ucidef_add_switch "switch0" \
+ 			"0:lan" "4:wan" "6@eth0"

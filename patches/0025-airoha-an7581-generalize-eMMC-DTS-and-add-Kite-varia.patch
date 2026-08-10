@@ -1,0 +1,203 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Christian Marangi <ansuelsmth@gmail.com>
+Date: Thu, 9 Apr 2026 11:49:26 +0200
+Subject: [PATCH 25/76] airoha: an7581: generalize eMMC DTS and add Kite
+ variant
+
+Generalize the eMMC DTS to common node and add a variant with the Kite WiFi
+chip installed. Also rename the eMMC model name and add the Eagle name to
+it.
+
+Signed-off-by: Christian Marangi <ansuelsmth@gmail.com>
+---
+ .../airoha/dts/an7581-evb-emmc-eagle.dts      | 39 +++++++++++++++++++
+ .../linux/airoha/dts/an7581-evb-emmc-kite.dts | 24 ++++++++++++
+ ...7581-evb-emmc.dts => an7581-evb-emmc.dtsi} | 37 ------------------
+ target/linux/airoha/image/an7581.mk           | 23 ++++++++---
+ 4 files changed, 81 insertions(+), 42 deletions(-)
+ create mode 100644 target/linux/airoha/dts/an7581-evb-emmc-eagle.dts
+ create mode 100644 target/linux/airoha/dts/an7581-evb-emmc-kite.dts
+ rename target/linux/airoha/dts/{an7581-evb-emmc.dts => an7581-evb-emmc.dtsi} (86%)
+
+diff --git a/target/linux/airoha/dts/an7581-evb-emmc-eagle.dts b/target/linux/airoha/dts/an7581-evb-emmc-eagle.dts
+new file mode 100644
+index 00000000000..c2e2bb9a47b
+--- /dev/null
++++ b/target/linux/airoha/dts/an7581-evb-emmc-eagle.dts
+@@ -0,0 +1,39 @@
++// SPDX-License-Identifier: (GPL-2.0-only OR BSD-2-Clause)
++/dts-v1/;
++
++#include "an7581-evb-emmc.dtsi"
++#include "an7581-npu-mt7996.dtsi"
++
++/ {
++	model = "Airoha AN7581 Evaluation Board (eMMC + Eagle)";
++	compatible = "airoha,an7581-evb", "airoha,an7581", "airoha,en7581";
++
++	aliases {
++		serial0 = &uart1;
++	};
++
++	chosen {
++		bootargs = "console=ttyS0,115200 earlycon";
++		stdout-path = "serial0:115200n8";
++	};
++
++	memory@80000000 {
++		device_type = "memory";
++		reg = <0x0 0x80000000 0x2 0x00000000>;
++	};
++};
++
++&pcie2 {
++	pinctrl-names = "default";
++	pinctrl-0 = <&pcie2_rst_pins>;
++	status = "okay";
++};
++
++&en7581_pinctrl {
++	pcie2_rst_pins: pcie2-rst-pins {
++		conf {
++			pins = "pcie_reset2";
++			drive-open-drain = <1>;
++		};
++	};
++};
+diff --git a/target/linux/airoha/dts/an7581-evb-emmc-kite.dts b/target/linux/airoha/dts/an7581-evb-emmc-kite.dts
+new file mode 100644
+index 00000000000..46a23d0e4e4
+--- /dev/null
++++ b/target/linux/airoha/dts/an7581-evb-emmc-kite.dts
+@@ -0,0 +1,24 @@
++// SPDX-License-Identifier: (GPL-2.0-only OR BSD-2-Clause)
++/dts-v1/;
++
++#include "an7581-evb-emmc.dtsi"
++#include "an7581-npu-mt7992.dtsi"
++
++/ {
++	model = "Airoha AN7581 Evaluation Board (eMMC + Kite)";
++	compatible = "airoha,an7581-evb", "airoha,an7581", "airoha,en7581";
++
++	aliases {
++		serial0 = &uart1;
++	};
++
++	chosen {
++		bootargs = "console=ttyS0,115200 earlycon";
++		stdout-path = "serial0:115200n8";
++	};
++
++	memory@80000000 {
++		device_type = "memory";
++		reg = <0x0 0x80000000 0x2 0x00000000>;
++	};
++};
+diff --git a/target/linux/airoha/dts/an7581-evb-emmc.dts b/target/linux/airoha/dts/an7581-evb-emmc.dtsi
+similarity index 86%
+rename from target/linux/airoha/dts/an7581-evb-emmc.dts
+rename to target/linux/airoha/dts/an7581-evb-emmc.dtsi
+index d78bbb1bd22..e5044a00fed 100644
+--- a/target/linux/airoha/dts/an7581-evb-emmc.dts
++++ b/target/linux/airoha/dts/an7581-evb-emmc.dtsi
+@@ -1,33 +1,9 @@
+ // SPDX-License-Identifier: (GPL-2.0-only OR BSD-2-Clause)
+ /dts-v1/;
+ 
+-/* Bootloader installs ATF here */
+-/memreserve/ 0x80000000 0x200000;
+-
+ #include <dt-bindings/leds/common.h>
+ #include <dt-bindings/gpio/gpio.h>
+ #include "an7581.dtsi"
+-
+-/ {
+-	model = "Airoha AN7581 Evaluation Board";
+-	compatible = "airoha,an7581-evb", "airoha,an7581", "airoha,en7581";
+-
+-	aliases {
+-		serial0 = &uart1;
+-	};
+-
+-	chosen {
+-		bootargs = "console=ttyS0,115200 earlycon";
+-		stdout-path = "serial0:115200n8";
+-		linux,usable-memory-range = <0x0 0x80200000 0x0 0x1fe00000>;
+-	};
+-
+-	memory@80000000 {
+-		device_type = "memory";
+-		reg = <0x0 0x80000000 0x2 0x00000000>;
+-	};
+-};
+-
+ &sound {
+ 	audio-routing = "Headphone", "HP_L",
+ 			"Headphone", "HP_R",
+@@ -70,13 +46,6 @@
+ 		};
+ 	};
+ 
+-	pcie2_rst_pins: pcie2-rst-pins {
+-		conf {
+-			pins = "pcie_reset2";
+-			drive-open-drain = <1>;
+-		};
+-	};
+-
+ 	gswp1_led0_pins: gswp1-led0-pins {
+ 		mux {
+ 			function = "phy1_led0";
+@@ -192,12 +161,6 @@
+ 	status = "okay";
+ };
+ 
+-&pcie2 {
+-	pinctrl-names = "default";
+-	pinctrl-0 = <&pcie2_rst_pins>;
+-	status = "okay";
+-};
+-
+ &mdio {
+ 	as21xx_1: ethernet-phy@1d {
+ 		compatible = "ethernet-phy-ieee802.3-c45";
+diff --git a/target/linux/airoha/image/an7581.mk b/target/linux/airoha/image/an7581.mk
+index 6e1fde16d61..31433db0a82 100644
+--- a/target/linux/airoha/image/an7581.mk
++++ b/target/linux/airoha/image/an7581.mk
+@@ -32,16 +32,29 @@ define Device/airoha_an7581-evb
+ endef
+ TARGET_DEVICES += airoha_an7581-evb
+ 
+-define Device/airoha_an7581-evb-emmc
++define Device/airoha_an7581-evb-emmc-eagle
+   DEVICE_VENDOR := Airoha
+-  DEVICE_MODEL := AN7581 Evaluation Board (EMMC)
+-  DEVICE_DTS := an7581-evb-emmc
+-  DEVICE_PACKAGES := kmod-i2c-an7581
++  DEVICE_MODEL := AN7581 Evaluation Board (eMMC + Eagle)
++  DEVICE_DTS := an7581-evb-emmc-eagle
++  DEVICE_PACKAGES := kmod-i2c-an7581 airoha-en7581-mt7996-npu-firmware \
++		    kmod-mt7996-firmware wpad-basic-mbedtls
+   ARTIFACT/preloader.bin := an7581-preloader rfb
+   ARTIFACT/bl31-uboot.fip := an7581-bl31-uboot rfb
+   ARTIFACTS := preloader.bin bl31-uboot.fip
+ endef
+-TARGET_DEVICES += airoha_an7581-evb-emmc
++TARGET_DEVICES += airoha_an7581-evb-emmc-eagle
++
++define Device/airoha_an7581-evb-emmc-kite
++  DEVICE_VENDOR := Airoha
++  DEVICE_MODEL := AN7581 Evaluation Board (eMMC + Kite)
++  DEVICE_DTS := an7581-evb-emmc-kite
++  DEVICE_PACKAGES := kmod-i2c-an7581 airoha-en7581-mt7992-npu-firmware \
++		    kmod-mt7992-firmware wpad-basic-mbedtls
++  ARTIFACT/preloader.bin := an7581-preloader rfb
++  ARTIFACT/bl31-uboot.fip := an7581-bl31-uboot rfb
++  ARTIFACTS := preloader.bin bl31-uboot.fip
++endef
++TARGET_DEVICES += airoha_an7581-evb-emmc-kite
+ 
+ define Device/gemtek_w1700k-ubi
+   DEVICE_VENDOR := Gemtek

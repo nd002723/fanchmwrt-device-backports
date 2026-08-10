@@ -1,0 +1,158 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Dmitry Mostovoy <stavultras@gmail.com>
+Date: Tue, 28 Jul 2026 03:26:19 -0400
+Subject: [PATCH 73/76] mediatek: add support for Cudy WR3000U v1
+
+Hardware:
+ - SoC: MediaTek MT7981B
+ - CPU: 2x 1.3 GHz Cortex-A53
+ - Flash: 256 MiB ESMT F50L2G41XA
+ - RAM: DDR3, 512 MiB
+ - WLAN: 2.4 GHz, 5 GHz (MediaTek MT7976CN, 802.11ax)
+ - 1x WAN MT7531 (JXD 2531Z) 10/100/1000 Mbps
+ - 4x LAN 2x MT7530 (JXD 2529S) 10/100/1000 Mbps
+ - USB 3.0 port
+ - Buttons: Reset, WPS
+ - 8x LEDs: 2x Red, 6x Blue
+ - Serial console: no need to solder. 115200 8n1
+ - Power: 12 VDC, 1.5 A
+
+The DTS inherits WBR3000UAX because WR3000U is almost the same.
+The only difference is size of NAND and factory UBI length.
+
++---------+-------------------+-----------+
+|         | MAC               | Algorithm |
++---------+-------------------+-----------+
+| WAN     | D4:0D:AB:xx:xx:x1 | label+1   |
+| LAN     | D4:0D:AB:xx:xx:x0 | label     |
+| WLAN 2g | D4:0D:AB:xx:xx:x0 | label     |
+| WLAN 5g | D6:0D:AB:xx:xx:x1 | label+1   |
++---------+-------------------+-----------+
+
+There are 2 ways to install OpenWrt:
+- via an intermediate RSA-signed vendor's image or
+- via UART && TFTPd
+
+Migration to OpenWrt via OEM firmware:
+- Download the migration image from
+  https://drive.google.com/drive/folders/1BKVarlwlNxf7uJUtRhuMGUqeCa5KpMnj
+  (The folder is Cudy's official "Cudy Intermediary OpenWrt Firmware" resource)
+- Upload the migration image via OEM web interface
+- After flashing, OpenWrt is accessible via http://192.168.1.1
+- Flash the official OpenWrt image
+
+Install using UART & TFTP:
+- Connect to UART.
+- Connect to LAN and set your IP to 192.168.1.88/24.
+- Configure a TFTP server to serve
+  openwrt-mediatek-filogic-cudy_wr3000u-v1-initramfs-kernel.bin file
+  and run the TFTP server.
+- Press reset and power-on the router. Hold the reset button for 5 seconds
+- TFTP error: 'File not found' appears and MTK console becomes available
+- Enter the following commands in the console:
+  setenv bootfile openwrt-mediatek-filogic-cudy_wr3000u-v1-initramfs-kernel.bin
+  tftpboot
+  bootm
+- After booting to initramfs, via http://192.168.1.1 flash
+  openwrt-mediatek-filogic-cudy_wr3000u-v1-squashfs-sysupgrade.bin
+- After flashing, OpenWrt is accessible via http://192.168.1.1
+
+If you fail to flash the device,
+you can use TFTP to flash back to the original firmware:
+- Download the original firmware from
+  https://www.cudy.com/pages/download-center/wr3000u-256mb-1-0
+- Connect to LAN and set your IP to 192.168.1.88/24.
+  Configure a TFTP server and an recovery.bin firmware file
+- With the router off, press the RESET button.
+  While the router is turning on,
+  the button should continue to be pressed for at least 5 seconds
+- After 1-2 minutes the original firmware is available on http://192.168.10.1
+
+Signed-off-by: Dmitry Mostovoy <stavultras@gmail.com>
+Link: https://github.com/openwrt/openwrt/pull/24447
+Signed-off-by: Hauke Mehrtens <hauke@hauke-m.de>
+---
+ .../mediatek/dts/mt7981b-cudy-wr3000u-v1.dts  | 19 +++++++++++++++++++
+ .../filogic/base-files/etc/board.d/01_leds    |  1 +
+ .../etc/hotplug.d/ieee80211/11_fix_wifi_mac   |  1 +
+ target/linux/mediatek/image/filogic.mk        | 17 +++++++++++++++++
+ 4 files changed, 38 insertions(+)
+ create mode 100644 target/linux/mediatek/dts/mt7981b-cudy-wr3000u-v1.dts
+
+diff --git a/target/linux/mediatek/dts/mt7981b-cudy-wr3000u-v1.dts b/target/linux/mediatek/dts/mt7981b-cudy-wr3000u-v1.dts
+new file mode 100644
+index 00000000000..58b39b21898
+--- /dev/null
++++ b/target/linux/mediatek/dts/mt7981b-cudy-wr3000u-v1.dts
+@@ -0,0 +1,19 @@
++// SPDX-License-Identifier: (GPL-2.0 OR MIT)
++
++/dts-v1/;
++#include "mt7981b-cudy-wbr3000uax-v1.dtsi"
++
++/ {
++	model = "Cudy WR3000U v1";
++	compatible = "cudy,wr3000u-v1", "mediatek,mt7981";
++};
++
++&spi_nand {
++	mediatek,nmbm;
++	mediatek,bmt-max-ratio = <1>;
++	mediatek,bmt-max-reserved-blocks = <64>;
++};
++
++&ubi {
++	reg = <0x5c0000 0xe600000>;
++};
+diff --git a/target/linux/mediatek/filogic/base-files/etc/board.d/01_leds b/target/linux/mediatek/filogic/base-files/etc/board.d/01_leds
+index fa6914e31de..426c97aef00 100644
+--- a/target/linux/mediatek/filogic/base-files/etc/board.d/01_leds
++++ b/target/linux/mediatek/filogic/base-files/etc/board.d/01_leds
+@@ -97,6 +97,7 @@ cudy,wr3000p-v1-ubootmod)
+ 	ucidef_set_led_netdev "wan" "wan" "white:wan" "wan" "link tx rx"
+ 	ucidef_set_led_netdev "internet" "internet" "white:wan-online" "wan" "link"
+ 	;;
++cudy,wr3000u-v1|\
+ cudy,wbr3000uax-v1|\
+ cudy,wbr3000uax-v1-ubootmod)
+ 	ucidef_set_led_default "internet_off" "internet_off" "red:fault" "1"
+diff --git a/target/linux/mediatek/filogic/base-files/etc/hotplug.d/ieee80211/11_fix_wifi_mac b/target/linux/mediatek/filogic/base-files/etc/hotplug.d/ieee80211/11_fix_wifi_mac
+index 6b513a25ebc..d10b6f2f5b8 100644
+--- a/target/linux/mediatek/filogic/base-files/etc/hotplug.d/ieee80211/11_fix_wifi_mac
++++ b/target/linux/mediatek/filogic/base-files/etc/hotplug.d/ieee80211/11_fix_wifi_mac
+@@ -99,6 +99,7 @@ case "$board" in
+ 	cudy,tr3000-256mb-v1|\
+ 	cudy,tr3000-v1|\
+ 	cudy,tr3000-v1-ubootmod|\
++	cudy,wr3000u-v1|\
+ 	cudy,wbr3000uax-v1|\
+ 	cudy,wbr3000uax-v1-ubootmod|\
+ 	cudy,wr3000e-v1|\
+diff --git a/target/linux/mediatek/image/filogic.mk b/target/linux/mediatek/image/filogic.mk
+index c83094e505d..0ad00a16e29 100644
+--- a/target/linux/mediatek/image/filogic.mk
++++ b/target/linux/mediatek/image/filogic.mk
+@@ -1570,6 +1570,23 @@ define Device/cudy_wr3000p-v1-ubootmod
+ endef
+ TARGET_DEVICES += cudy_wr3000p-v1-ubootmod
+ 
++define Device/cudy_wr3000u-v1
++  DEVICE_VENDOR := Cudy
++  DEVICE_MODEL := WR3000U
++  DEVICE_VARIANT := v1
++  DEVICE_DTS := mt7981b-cudy-wr3000u-v1
++  DEVICE_DTS_DIR := ../dts
++  SUPPORTED_DEVICES += R138
++  UBINIZE_OPTS := -E 5
++  BLOCKSIZE := 128k
++  PAGESIZE := 2048
++  IMAGE_SIZE := 235520k
++  KERNEL_IN_UBI := 1
++  IMAGE/sysupgrade.bin := sysupgrade-tar | append-metadata
++  DEVICE_PACKAGES := kmod-usb3 kmod-mt7915e kmod-mt7981-firmware mt7981-wo-firmware
++endef
++TARGET_DEVICES += cudy_wr3000u-v1
++
+ define Device/cudy_wbr3000uax-v1
+   DEVICE_VENDOR := Cudy
+   DEVICE_MODEL := WBR3000UAX

@@ -1,0 +1,778 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Kirill Molotov <kirill2015molotov@gmail.com>
+Date: Thu, 7 May 2026 20:37:18 +0300
+Subject: [PATCH 46/76] mediatek: filogic: add support for Globitel BT-R320
+
+The Globitel BT-R320 (PCB rev V1.2) is an enterprise/ISP Wi-Fi 6 router
+based on the MediaTek MT7981B (Filogic 820) platform.
+
+Hardware specifications:
+SoC: MediaTek MT7981B (Filogic 820)
+RAM: 1GB DDR4 (Nanya NT5AD512M16C4-HR)
+Flash: 128GB eMMC (UNIC UNMEN07GC4C31BS)
+Switch: MediaTek MT7531AE
+Ethernet: 1x 1GbE WAN, 3x 1GbE LAN
+Wi-Fi: 2.4 GHz: 2x2 MT7976CN and 5 GHz: 2x2 MT7976CN (integrated FEM)
+USB: 1x USB 3.0
+LEDs: 2x Green (WLAN 2.4G / 5G)
+Buttons: 1x Reset (GPIO 1, ACTIVE_LOW), 1x WPS (GPIO 0, ACTIVE_LOW)
+Power: 12V, 1.5A
+UART: 115200 8n1
+
+Note on eMMC configuration (Addressing 52MHz limit on 128GB IC):
+Debugfs output from the OEM firmware (/sys/kernel/debug/mmc0/ios) confirms
+the manufacturer deliberately limits the eMMC to 52MHz High-Speed mode at 3.3V
+(actual clock: 52000000 Hz, bus width: 8 bits, timing spec: mmc high-speed).
+Therefore, the conservative DTS properties (max-frequency = <52000000> and
+lack of HS200/HS400 support) strictly reflect the OEM hardware design.
+
+Installation instructions:
+1. SSH into the stock router (192.168.132.1, user: root, pass: password).
+2. Back up existing partitions using dd.
+3. Upload the OpenWrt-built GPT partition table (*-gpt.bin) and flash it:
+   dd if=/tmp/gpt.bin of=/dev/mmcblk0 bs=512 count=34 conv=fsync
+   echo -e 'w' | fdisk /dev/mmcblk0
+4. Flash the OpenWrt-built U-Boot (*-bl31-uboot.fip) to the FIP partition:
+   dd if=/tmp/uboot.fip of=$(blkid -t PARTLABEL=fip -o device) conv=fsync
+5. Disconnect power. Connect PC with static IP 192.168.1.2.
+6. Hold reset button, power on, and wait 10 seconds to enter U-Boot web UI.
+7. Flash the OpenWrt sysupgrade image.
+
+Stock partition layout:
+p1: uboot_env
+p2: factory
+p3: fip
+p4: kernel
+p5: rootfs
+p6: userdata
+
+MAC address layout (factory partition, mmcblk0p2):
+WAN: xx:xx:xx:xx:xx:xx (factory offset 0x24)
+LAN: xx:xx:xx:xx:xx:xy (factory offset 0x2a)
+Label: Matches LAN MAC (0x2a)
+2.4G: Base MAC (extracted from factory offset 0x4)
+5G: Base MAC with Locally Administered bit set
+
+Signed-off-by: Kirill Molotov <kirill2015molotov@gmail.com>
+Link: https://github.com/openwrt/openwrt/pull/23188
+Signed-off-by: Hauke Mehrtens <hauke@hauke-m.de>
+---
+ package/boot/uboot-mediatek/Makefile          |  13 +
+ .../patches/472-add-globitel-bt-r320.patch    | 348 ++++++++++++++++++
+ .../uboot-envtools/files/mediatek_filogic     |   1 +
+ .../mediatek/dts/mt7981b-globitel-bt-r320.dts | 222 +++++++++++
+ .../filogic/base-files/etc/board.d/02_network |   1 +
+ .../etc/hotplug.d/ieee80211/11_fix_wifi_mac   |   5 +
+ .../base-files/lib/upgrade/platform.sh        |   2 +
+ target/linux/mediatek/image/filogic.mk        |  23 ++
+ 8 files changed, 615 insertions(+)
+ create mode 100644 package/boot/uboot-mediatek/patches/472-add-globitel-bt-r320.patch
+ create mode 100644 target/linux/mediatek/dts/mt7981b-globitel-bt-r320.dts
+
+diff --git a/package/boot/uboot-mediatek/Makefile b/package/boot/uboot-mediatek/Makefile
+index 0852aeb1bd2..30757a93b3d 100644
+--- a/package/boot/uboot-mediatek/Makefile
++++ b/package/boot/uboot-mediatek/Makefile
+@@ -421,6 +421,18 @@ define U-Boot/mt7981_glinet_gl-xe3000
+   DEPENDS:=+trusted-firmware-a-mt7981-emmc-ddr4
+ endef
+ 
++define U-Boot/mt7981_globitel_bt-r320
++  NAME:=Globitel BT-R320
++  BUILD_SUBTARGET:=filogic
++  BUILD_DEVICES:=globitel_bt-r320
++  UBOOT_CONFIG:=mt7981_globitel_bt-r320
++  UBOOT_IMAGE:=u-boot.fip
++  BL2_BOOTDEV:=emmc
++  BL2_SOC:=mt7981
++  BL2_DDRTYPE:=ddr4
++  DEPENDS:=+trusted-firmware-a-mt7981-emmc-ddr4
++endef
++
+ define U-Boot/mt7981_h3c_magic-nx30-pro
+   NAME:=H3C Magic NX30 Pro
+   BUILD_SUBTARGET:=filogic
+@@ -1219,6 +1231,7 @@ UBOOT_TARGETS := \
+ 	mt7981_glinet_gl-mt2500 \
+ 	mt7981_glinet_gl-x3000 \
+ 	mt7981_glinet_gl-xe3000 \
++	mt7981_globitel_bt-r320 \
+ 	mt7981_h3c_magic-nx30-pro \
+ 	mt7981_imou_hx21 \
+ 	mt7981_jcg_q30-pro \
+diff --git a/package/boot/uboot-mediatek/patches/472-add-globitel-bt-r320.patch b/package/boot/uboot-mediatek/patches/472-add-globitel-bt-r320.patch
+new file mode 100644
+index 00000000000..ce9dd2d79c5
+--- /dev/null
++++ b/package/boot/uboot-mediatek/patches/472-add-globitel-bt-r320.patch
+@@ -0,0 +1,348 @@
++--- /dev/null
+++++ b/arch/arm/dts/mt7981-globitel-bt-r320.dts
++@@ -0,0 +1,160 @@
+++// SPDX-License-Identifier: GPL-2.0
+++
+++/dts-v1/;
+++#include "mt7981.dtsi"
+++#include <dt-bindings/gpio/gpio.h>
+++#include <dt-bindings/input/input.h>
+++
+++/ {
+++	#address-cells = <1>;
+++	#size-cells = <1>;
+++	model = "Globitel BT-R320";
+++	compatible = "globitel,bt-r320", "mediatek,mt7981", "mediatek,mt7981-rfb";
+++
+++	chosen {
+++		stdout-path = &uart0;
+++		tick-timer = &timer0;
+++	};
+++
+++	memory@40000000 {
+++		device_type = "memory";
+++		reg = <0x40000000 0x40000000>;
+++	};
+++
+++	reg_3p3v: regulator-3p3v {
+++		compatible = "regulator-fixed";
+++		regulator-name = "fixed-3.3V";
+++		regulator-min-microvolt = <3300000>;
+++		regulator-max-microvolt = <3300000>;
+++		regulator-boot-on;
+++		regulator-always-on;
+++	};
+++
+++	gpio-keys {
+++		compatible = "gpio-keys";
+++
+++		reset {
+++			label = "reset";
+++			linux,code = <KEY_RESTART>;
+++			gpios = <&pio 1 GPIO_ACTIVE_LOW>;
+++		};
+++
+++		wps {
+++			label = "wps";
+++			linux,code = <KEY_WPS_BUTTON>;
+++			gpios = <&pio 0 GPIO_ACTIVE_LOW>;
+++		};
+++	};
+++};
+++
+++&uart0 {
+++	status = "okay";
+++};
+++
+++&uart1 {
+++	pinctrl-names = "default";
+++	pinctrl-0 = <&uart1_pins>;
+++	status = "disabled";
+++};
+++
+++&eth {
+++	status = "okay";
+++	mediatek,gmac-id = <0>;
+++	phy-mode = "sgmii";
+++	mediatek,switch = "mt7531";
+++	reset-gpios = <&pio 39 GPIO_ACTIVE_HIGH>;
+++
+++	fixed-link {
+++		speed = <1000>;
+++		full-duplex;
+++	};
+++};
+++
+++&pio {
+++	spic_pins: spi1-pins-func-1 {
+++		mux {
+++			function = "spi";
+++			groups = "spi1_1";
+++		};
+++	};
+++
+++	uart1_pins: spi1-pins-func-3 {
+++		mux {
+++			function = "uart";
+++			groups = "uart1_2";
+++		};
+++	};
+++
+++	one_pwm_pins: one-pwm-pins {
+++		mux {
+++			function = "pwm";
+++			groups = "pwm0_1";
+++		};
+++	};
+++
+++	two_pwm_pins: two-pwm-pins {
+++		mux {
+++			function = "pwm";
+++			groups = "pwm0_1", "pwm1_0";
+++		};
+++	};
+++
+++	three_pwm_pins: three-pwm-pins {
+++		mux {
+++			function = "pwm";
+++			groups = "pwm0_1", "pwm1_0", "pwm2";
+++		};
+++	};
+++
+++	mmc0_pins_default: mmc0default {
+++		mux {
+++			function = "flash";
+++			groups = "emmc_45";
+++		};
+++
+++		conf-cmd-dat {
+++			pins = "SPI0_CLK", "SPI0_MOSI", "SPI0_MISO",
+++				"SPI0_CS",  "SPI0_HOLD", "SPI0_WP",
+++				"SPI1_CLK", "SPI1_MOSI", "SPI1_MISO";
+++			input-enable;
+++			drive-strength = <MTK_DRIVE_4mA>;
+++			bias-pull-up = <MTK_PUPD_SET_R1R0_01>;
+++		};
+++
+++		conf-clk {
+++			pins = "SPI1_CS";
+++			drive-strength = <MTK_DRIVE_6mA>;
+++			bias-pull-down = <MTK_PUPD_SET_R1R0_10>;
+++		};
+++
+++		conf-rst {
+++			pins = "PWM0";
+++			drive-strength = <MTK_DRIVE_4mA>;
+++			bias-pull-up = <MTK_PUPD_SET_R1R0_01>;
+++		};
+++	};
+++};
+++
+++&pwm {
+++	pinctrl-names = "default";
+++	pinctrl-0 = <&two_pwm_pins>;
+++	status = "okay";
+++};
+++
+++&watchdog {
+++	status = "disabled";
+++};
+++
+++&mmc0 {
+++	pinctrl-names = "default";
+++	pinctrl-0 = <&mmc0_pins_default>;
+++	bus-width = <8>;
+++	max-frequency = <52000000>;
+++	cap-mmc-highspeed;
+++	cap-mmc-hw-reset;
+++	vmmc-supply = <&reg_3p3v>;
+++	non-removable;
+++	status = "okay";
+++};
++--- /dev/null
+++++ b/defenvs/mt7981_globitel_bt-r320_env
++@@ -0,0 +1,52 @@
+++ipaddr=192.168.1.1
+++serverip=192.168.1.254
+++loadaddr=0x46000000
+++console=earlycon=uart8250,mmio32,0x11002000 console=ttyS0
+++bootargs=root=/dev/fit0 rootwait
+++bootcmd=if pstore check ; then run boot_recovery ; else run boot_emmc ; fi
+++bootconf=config-1#mt7981b-globitel-bt-r320
+++bootdelay=0
+++bootfile=openwrt-mediatek-filogic-globitel_bt-r320-initramfs-recovery.itb
+++bootfile_bl2=openwrt-mediatek-filogic-globitel_bt-r320-emmc-preloader.bin
+++bootfile_fip=openwrt-mediatek-filogic-globitel_bt-r320-emmc-bl31-uboot.fip
+++bootfile_upg=openwrt-mediatek-filogic-globitel_bt-r320-squashfs-sysupgrade.itb
+++bootmenu_confirm_return=askenv - Press ENTER to return to menu ; bootmenu 60
+++bootmenu_default=0
+++bootmenu_delay=0
+++bootmenu_title=       ;34m( ( ( 9mOpenWrt;34m ) ) )  ;36m[eMMC]m
+++bootmenu_0=Initialize environment.=run _firstboot
+++bootmenu_0d=Run default boot command.=run boot_default
+++bootmenu_1=Boot system via TFTP.=run boot_tftp ; run bootmenu_confirm_return
+++bootmenu_2=Boot production system from eMMC.=run boot_production ; run bootmenu_confirm_return
+++bootmenu_3=Boot recovery system from eMMC.=run boot_recovery ; run bootmenu_confirm_return
+++bootmenu_4=Load production system via TFTP then write to eMMC.=setenv noboot 1 ; setenv replacevol 1 ; run boot_tftp_production ; setenv noboot ; setenv replacevol ; run bootmenu_confirm_return
+++bootmenu_5=Load recovery system via TFTP then write to eMMC.=setenv noboot 1 ; setenv replacevol 1 ; run boot_tftp_recovery ; setenv noboot ; setenv replacevol ; run bootmenu_confirm_return
+++bootmenu_6=mLoad BL31+U-Boot FIP via TFTP then write to eMMC.m=run boot_tftp_write_fip ; run bootmenu_confirm_return
+++bootmenu_7=mLoad BL2 preloader via TFTP then write to eMMC.m=run boot_tftp_write_bl2 ; run bootmenu_confirm_return
+++bootmenu_8=Reboot.=reset
+++bootmenu_9=Reset all settings to factory defaults.=run reset_factory ; reset
+++boot_first=if button reset ; then run boot_tftp_recovery ; setenv flag_recover 1 ; run boot_default ; fi ; bootmenu
+++boot_default=if env exists flag_recover ; then else run bootcmd ; fi ; run boot_recovery ; setenv replacevol 1 ; run boot_tftp_forever
+++boot_production=run emmc_read_production && bootm $loadaddr#$bootconf
+++boot_recovery=run emmc_read_recovery && bootm $loadaddr#$bootconf
+++boot_emmc=run boot_production ; run boot_recovery
+++boot_tftp_forever=while true ; do run boot_tftp_recovery ; sleep 1 ; done
+++boot_tftp_production=tftpboot $loadaddr $bootfile_upg && env exists replacevol && iminfo $loadaddr && run emmc_write_production ; if env exists noboot ; then else bootm $loadaddr#$bootconf ; fi
+++boot_tftp_recovery=tftpboot $loadaddr $bootfile && env exists replacevol && iminfo $loadaddr && run emmc_write_recovery ; if env exists noboot ; then else bootm $loadaddr#$bootconf ; fi
+++boot_tftp_write_fip=tftpboot $loadaddr $bootfile_fip && run emmc_write_fip
+++boot_tftp_write_bl2=tftpboot $loadaddr $bootfile_bl2 && run emmc_write_bl2
+++boot_tftp=tftpboot $loadaddr $bootfile && bootm $loadaddr#$bootconf
+++mmc_write_vol=imszb $loadaddr image_size && test 0x$image_size -le 0x$part_size && mmc erase 0x$part_addr 0x$image_size && mmc write $loadaddr 0x$part_addr 0x$image_size
+++mmc_read_vol=mmc read $loadaddr $part_addr 0x100 && imszb $loadaddr image_size && test 0x$image_size -le 0x$part_size && mmc read $loadaddr 0x$part_addr 0x$image_size && setexpr filesize $image_size * 0x200
+++part_default=production
+++part_recovery=recovery
+++reset_factory=eraseenv && reset
+++emmc_read_production=part start mmc 0 $part_default part_addr && part size mmc 0 $part_default part_size && run mmc_read_vol
+++emmc_read_recovery=part start mmc 0 $part_recovery part_addr && part size mmc 0 $part_recovery part_size && run mmc_read_vol
+++emmc_write_bl2=mmc partconf 0 1 1 1 && mmc erase 0x0 0x400 && mmc write $fileaddr 0x0 0x400 ; mmc partconf 0 1 1 0
+++emmc_write_fip=mmc erase 0x3400 0x2000 && mmc write $fileaddr 0x3400 0x2000 && mmc erase 0x2000 0x800
+++emmc_write_production=part start mmc 0 $part_default part_addr && part size mmc 0 $part_default part_size && run mmc_write_vol
+++emmc_write_recovery=part start mmc 0 $part_recovery part_addr && part size mmc 0 $part_recovery part_size && run mmc_write_vol
+++_init_env=setenv _init_env ; setenv _create_env ; saveenv ; saveenv
+++_firstboot=setenv _firstboot ; run _switch_to_menu ; run _init_env ; run boot_first
+++_switch_to_menu=setenv _switch_to_menu ; setenv bootdelay 3 ; setenv bootmenu_delay 3 ; setenv bootmenu_0 $bootmenu_0d ; setenv bootmenu_0d ; run _bootmenu_update_title
+++_bootmenu_update_title=setenv _bootmenu_update_title ; setenv bootmenu_title "$bootmenu_title       m$verm"
++--- /dev/null
+++++ b/configs/mt7981_globitel_bt-r320_defconfig
++@@ -0,0 +1,126 @@
+++CONFIG_ARM=y
+++CONFIG_ARM_SMCCC=y
+++CONFIG_SYS_HAS_NONCACHED_MEMORY=y
+++CONFIG_POSITION_INDEPENDENT=y
+++CONFIG_ARCH_MEDIATEK=y
+++CONFIG_TEXT_BASE=0x41e00000
+++CONFIG_SYS_MALLOC_F_LEN=0x4000
+++CONFIG_NR_DRAM_BANKS=1
+++CONFIG_ENV_SIZE=0x40000
+++CONFIG_ENV_OFFSET=0x400000
+++CONFIG_DEFAULT_DEVICE_TREE="mt7981-globitel-bt-r320"
+++CONFIG_OF_LIBFDT_OVERLAY=y
+++CONFIG_TARGET_MT7981=y
+++CONFIG_SYS_LOAD_ADDR=0x46000000
+++CONFIG_PRE_CON_BUF_ADDR=0x4007EF00
+++CONFIG_DEBUG_UART_BASE=0x11002000
+++CONFIG_DEBUG_UART_CLOCK=40000000
+++CONFIG_ENV_OFFSET_REDUND=0x440000
+++CONFIG_PCI=y
+++CONFIG_DEBUG_UART=y
+++CONFIG_AHCI=y
+++CONFIG_FIT=y
+++CONFIG_BOOTDELAY=30
+++CONFIG_AUTOBOOT_KEYED=y
+++CONFIG_AUTOBOOT_MENU_SHOW=y
+++CONFIG_DEFAULT_FDT_FILE="mediatek/mt7981-globitel-bt-r320.dtb"
+++CONFIG_LOGLEVEL=7
+++CONFIG_PRE_CONSOLE_BUFFER=y
+++CONFIG_LOG=y
+++# CONFIG_BOARD_INIT is not set
+++CONFIG_BOARD_LATE_INIT=y
+++CONFIG_HUSH_PARSER=y
+++CONFIG_SYS_PROMPT="MT7981> "
+++CONFIG_CMD_CPU=y
+++CONFIG_CMD_LICENSE=y
+++# CONFIG_CMD_BOOTEFI_BOOTMGR is not set
+++CONFIG_CMD_BOOTMENU=y
+++CONFIG_CMD_ASKENV=y
+++CONFIG_CMD_ERASEENV=y
+++CONFIG_CMD_ENV_FLAGS=y
+++CONFIG_CMD_RNG=y
+++CONFIG_CMD_STRINGS=y
+++CONFIG_CMD_DM=y
+++CONFIG_CMD_GPIO=y
+++CONFIG_CMD_PWM=y
+++CONFIG_CMD_GPT=y
+++CONFIG_CMD_MMC=y
+++CONFIG_CMD_PART=y
+++CONFIG_CMD_PCI=y
+++CONFIG_CMD_USB=y
+++CONFIG_CMD_TFTPSRV=y
+++CONFIG_CMD_RARP=y
+++CONFIG_CMD_CDP=y
+++CONFIG_CMD_SNTP=y
+++CONFIG_CMD_LINK_LOCAL=y
+++CONFIG_CMD_DHCP=y
+++CONFIG_CMD_DNS=y
+++CONFIG_CMD_PING=y
+++CONFIG_CMD_PXE=y
+++CONFIG_CMD_CACHE=y
+++CONFIG_CMD_PSTORE=y
+++CONFIG_CMD_PSTORE_MEM_ADDR=0x42ff0000
+++CONFIG_CMD_UUID=y
+++CONFIG_CMD_HASH=y
+++CONFIG_CMD_SMC=y
+++CONFIG_CMD_EXT4=y
+++CONFIG_CMD_FAT=y
+++CONFIG_CMD_FS_GENERIC=y
+++CONFIG_CMD_FS_UUID=y
+++CONFIG_OF_EMBED=y
+++CONFIG_ENV_OVERWRITE=y
+++CONFIG_ENV_IS_IN_MMC=y
+++CONFIG_ENV_REDUNDANT=y
+++CONFIG_ENV_RELOC_GD_ENV_ADDR=y
+++CONFIG_ENV_USE_DEFAULT_ENV_TEXT_FILE=y
+++CONFIG_ENV_DEFAULT_ENV_TEXT_FILE="defenvs/mt7981_globitel_bt-r320_env"
+++CONFIG_ENV_VARS_UBOOT_RUNTIME_CONFIG=y
+++CONFIG_VERSION_VARIABLE=y
+++CONFIG_NETCONSOLE=y
+++CONFIG_USE_IPADDR=y
+++CONFIG_IPADDR="192.168.1.1"
+++CONFIG_USE_SERVERIP=y
+++CONFIG_SERVERIP="192.168.1.254"
+++CONFIG_NET_RANDOM_ETHADDR=y
+++CONFIG_SCSI_AHCI=y
+++CONFIG_AHCI_PCI=y
+++CONFIG_MTK_AHCI=y
+++CONFIG_BUTTON=y
+++CONFIG_BUTTON_GPIO=y
+++CONFIG_CLK=y
+++CONFIG_GPIO_HOG=y
+++CONFIG_LED=y
+++CONFIG_LED_BLINK=y
+++CONFIG_LED_GPIO=y
+++CONFIG_SUPPORT_EMMC_BOOT=y
+++CONFIG_MMC_HS200_SUPPORT=y
+++CONFIG_MMC_MTK=y
+++CONFIG_PHY_FIXED=y
+++CONFIG_MEDIATEK_ETH=y
+++CONFIG_PCIE_MEDIATEK=y
+++CONFIG_PHY=y
+++CONFIG_PHY_MTK_TPHY=y
+++CONFIG_PINCTRL=y
+++CONFIG_PINCONF=y
+++CONFIG_PINCTRL_MT7622=y
+++CONFIG_PINCTRL_MT7981=y
+++CONFIG_POWER_DOMAIN=y
+++CONFIG_MTK_POWER_DOMAIN=y
+++CONFIG_DM_REGULATOR=y
+++CONFIG_DM_REGULATOR_FIXED=y
+++CONFIG_DM_REGULATOR_GPIO=y
+++CONFIG_DM_PWM=y
+++CONFIG_PWM_MTK=y
+++CONFIG_RAM=y
+++CONFIG_DM_RNG=y
+++CONFIG_RNG_MTK_V2=y
+++CONFIG_SCSI=y
+++CONFIG_DM_SERIAL=y
+++CONFIG_SERIAL_RX_BUFFER=y
+++CONFIG_MTK_SERIAL=y
+++CONFIG_SPI=y
+++CONFIG_USB=y
+++CONFIG_USB_XHCI_HCD=y
+++CONFIG_USB_XHCI_MTK=y
+++CONFIG_USB_STORAGE=y
+++CONFIG_LZO=y
+++CONFIG_ZSTD=y
+++CONFIG_HEXDUMP=y
+diff --git a/package/boot/uboot-tools/uboot-envtools/files/mediatek_filogic b/package/boot/uboot-tools/uboot-envtools/files/mediatek_filogic
+index 7373a1ad92a..e4b1f9a7c13 100644
+--- a/package/boot/uboot-tools/uboot-envtools/files/mediatek_filogic
++++ b/package/boot/uboot-tools/uboot-envtools/files/mediatek_filogic
+@@ -70,6 +70,7 @@ glinet,gl-mt2500-airoha|\
+ glinet,gl-mt6000|\
+ glinet,gl-x3000|\
+ glinet,gl-xe3000|\
++globitel,bt-r320|\
+ huasifei,wh3000|\
+ nradio,c8-668gl)
+ 	ubootenv_add_mmc "u-boot-env" "" "0x0" "0x80000"
+diff --git a/target/linux/mediatek/dts/mt7981b-globitel-bt-r320.dts b/target/linux/mediatek/dts/mt7981b-globitel-bt-r320.dts
+new file mode 100644
+index 00000000000..c35408f1e5e
+--- /dev/null
++++ b/target/linux/mediatek/dts/mt7981b-globitel-bt-r320.dts
+@@ -0,0 +1,222 @@
++// SPDX-License-Identifier: GPL-2.0-or-later OR MIT
++
++/dts-v1/;
++#include <dt-bindings/gpio/gpio.h>
++#include <dt-bindings/input/input.h>
++#include <dt-bindings/leds/common.h>
++
++#include "mt7981b.dtsi"
++
++/ {
++	model = "Globitel BT-R320";
++	compatible = "globitel,bt-r320", "mediatek,mt7981";
++
++	aliases {
++		serial0 = &uart0;
++		label-mac-device = &gmac0;
++	};
++
++	chosen {
++		bootargs = "root=PARTLABEL=rootfs rootwait";
++		stdout-path = "serial0:115200n8";
++	};
++
++	memory@40000000 {
++		device_type = "memory";
++		reg = <0 0x40000000 0 0x40000000>;
++	};
++
++	gpio-keys {
++		compatible = "gpio-keys";
++
++		button-wps {
++			label = "wps";
++			linux,code = <KEY_WPS_BUTTON>;
++			gpios = <&pio 0 GPIO_ACTIVE_LOW>;
++		};
++
++		button-reset {
++			label = "reset";
++			linux,code = <KEY_RESTART>;
++			gpios = <&pio 1 GPIO_ACTIVE_LOW>;
++		};
++	};
++
++	gpio-leds {
++		compatible = "gpio-leds";
++
++		led-0 {
++			function = LED_FUNCTION_WLAN_2GHZ;
++			color = <LED_COLOR_ID_GREEN>;
++			gpios = <&pio 34 GPIO_ACTIVE_LOW>;
++			linux,default-trigger = "phy0tpt";
++		};
++
++		led-1 {
++			function = LED_FUNCTION_WLAN_5GHZ;
++			color = <LED_COLOR_ID_GREEN>;
++			gpios = <&pio 35 GPIO_ACTIVE_LOW>;
++			linux,default-trigger = "phy1tpt";
++		};
++	};
++};
++
++&eth {
++	status = "okay";
++
++	gmac0: mac@0 {
++		compatible = "mediatek,eth-mac";
++		reg = <0>;
++		phy-mode = "2500base-x";
++		nvmem-cells = <&macaddr_factory_2a 0>;
++		nvmem-cell-names = "mac-address";
++		fixed-link {
++			speed = <2500>;
++			full-duplex;
++			pause;
++		};
++	};
++
++	mdio: mdio-bus {
++		#address-cells = <1>;
++		#size-cells = <0>;
++
++		switch@0 {
++			compatible = "mediatek,mt7531";
++			reg = <31>;
++			reset-gpios = <&pio 39 GPIO_ACTIVE_HIGH>;
++			interrupt-controller;
++			#interrupt-cells = <1>;
++			interrupt-parent = <&pio>;
++			interrupts = <38 IRQ_TYPE_LEVEL_HIGH>;
++
++			ports {
++				#address-cells = <1>;
++				#size-cells = <0>;
++
++				port@1 {
++					reg = <1>;
++					label = "lan1";
++				};
++
++				port@2 {
++					reg = <2>;
++					label = "lan2";
++				};
++
++				port@3 {
++					reg = <3>;
++					label = "lan3";
++				};
++
++				port@4 {
++					reg = <4>;
++					label = "wan";
++					nvmem-cells = <&macaddr_factory_24 0>;
++					nvmem-cell-names = "mac-address";
++				};
++
++				port@6 {
++					reg = <6>;
++					label = "cpu";
++					ethernet = <&gmac0>;
++					phy-mode = "2500base-x";
++					fixed-link {
++						speed = <2500>;
++						full-duplex;
++						pause;
++					};
++				};
++			};
++		};
++	};
++};
++
++&mmc0 {
++	status = "okay";
++	pinctrl-names = "default", "state_uhs";
++	pinctrl-0 = <&mmc0_pins_default>;
++	pinctrl-1 = <&mmc0_pins_uhs>;
++	bus-width = <8>;
++	max-frequency = <52000000>;
++	vmmc-supply = <&reg_3p3v>;
++	cap-mmc-highspeed;
++	non-removable;
++	no-sd;
++	no-sdio;
++
++	card@0 {
++		compatible = "mmc-card";
++		reg = <0>;
++
++		block {
++			compatible = "block-device";
++
++			partitions {
++				block-partition-factory {
++					partname = "factory";
++
++					nvmem-layout {
++						compatible = "fixed-layout";
++						#address-cells = <1>;
++						#size-cells = <1>;
++
++						eeprom_factory_0: eeprom@0 {
++							reg = <0x0 0x1000>;
++						};
++
++						macaddr_factory_24: macaddr@24 {
++							compatible = "mac-base";
++							reg = <0x24 0x6>;
++							#nvmem-cell-cells = <1>;
++						};
++
++						macaddr_factory_2a: macaddr@2a {
++							compatible = "mac-base";
++							reg = <0x2a 0x6>;
++							#nvmem-cell-cells = <1>;
++						};
++					};
++				};
++			};
++		};
++	};
++};
++
++&pio {
++	mmc0_pins_default: mmc0-pins-default {
++		mux {
++			function = "flash";
++			groups = "emmc_45";
++		};
++	};
++
++	mmc0_pins_uhs: mmc0-pins-uhs {
++		mux {
++			function = "flash";
++			groups = "emmc_45";
++		};
++	};
++};
++
++&uart0 {
++	status = "okay";
++};
++
++&watchdog {
++	status = "okay";
++};
++
++&wifi {
++	nvmem-cells = <&eeprom_factory_0>;
++	nvmem-cell-names = "eeprom";
++	status = "okay";
++};
++
++&usb_phy {
++	status = "okay";
++};
++
++&xhci {
++	status = "okay";
++};
+diff --git a/target/linux/mediatek/filogic/base-files/etc/board.d/02_network b/target/linux/mediatek/filogic/base-files/etc/board.d/02_network
+index 61d46516263..78f93e6a220 100644
+--- a/target/linux/mediatek/filogic/base-files/etc/board.d/02_network
++++ b/target/linux/mediatek/filogic/base-files/etc/board.d/02_network
+@@ -54,6 +54,7 @@ mediatek_setup_interfaces()
+ 	creatlentem,clt-r30b1|\
+ 	creatlentem,clt-r30b1-112m|\
+ 	cudy,wr3000-v1|\
++	globitel,bt-r320|\
+ 	jcg,q30-pro|\
+ 	jcg,q30-pro-stock|\
+ 	keenetic,kn-3711|\
+diff --git a/target/linux/mediatek/filogic/base-files/etc/hotplug.d/ieee80211/11_fix_wifi_mac b/target/linux/mediatek/filogic/base-files/etc/hotplug.d/ieee80211/11_fix_wifi_mac
+index bd46c02844c..cfca6d52d1f 100644
+--- a/target/linux/mediatek/filogic/base-files/etc/hotplug.d/ieee80211/11_fix_wifi_mac
++++ b/target/linux/mediatek/filogic/base-files/etc/hotplug.d/ieee80211/11_fix_wifi_mac
+@@ -126,6 +126,11 @@ case "$board" in
+ 		[ "$PHYNBR" = "0" ] && echo "$addr" > /sys${DEVPATH}/macaddress
+ 		[ "$PHYNBR" = "1" ] && macaddr_add $addr 1 > /sys${DEVPATH}/macaddress
+ 		;;
++	globitel,bt-r320)
++		addr=$(mmc_get_mac_binary factory 0x4)
++		[ "$PHYNBR" = "0" ] && echo "$addr" > /sys${DEVPATH}/macaddress
++		[ "$PHYNBR" = "1" ] && macaddr_setbit_la "$addr" > /sys${DEVPATH}/macaddress
++		;;
+ 	h3c,magic-nx30-pro-stock|\
+ 	h3c,magic-nx30-pro)
+ 		addr=$(mtd_get_mac_ascii pdt_data_1 ethaddr)
+diff --git a/target/linux/mediatek/filogic/base-files/lib/upgrade/platform.sh b/target/linux/mediatek/filogic/base-files/lib/upgrade/platform.sh
+index 1d8d4f02e88..ae781d73e0c 100644
+--- a/target/linux/mediatek/filogic/base-files/lib/upgrade/platform.sh
++++ b/target/linux/mediatek/filogic/base-files/lib/upgrade/platform.sh
+@@ -196,6 +196,7 @@ platform_do_upgrade() {
+ 	glinet,gl-mt6000|\
+ 	glinet,gl-x3000|\
+ 	glinet,gl-xe3000|\
++	globitel,bt-r320|\
+ 	huasifei,wh3000|\
+ 	huasifei,wh3000-pro-emmc|\
+ 	smartrg,sdg-8612|\
+@@ -435,6 +436,7 @@ platform_copy_config() {
+ 	glinet,gl-mt6000|\
+ 	glinet,gl-x3000|\
+ 	glinet,gl-xe3000|\
++	globitel,bt-r320|\
+ 	huasifei,wh3000|\
+ 	huasifei,wh3000-pro-emmc|\
+ 	jdcloud,re-cp-03|\
+diff --git a/target/linux/mediatek/image/filogic.mk b/target/linux/mediatek/image/filogic.mk
+index 56d1d048518..c89d364b507 100644
+--- a/target/linux/mediatek/image/filogic.mk
++++ b/target/linux/mediatek/image/filogic.mk
+@@ -1752,6 +1752,29 @@ define Device/glinet_gl-xe3000
+ endef
+ TARGET_DEVICES += glinet_gl-xe3000
+ 
++define Device/globitel_bt-r320
++  DEVICE_VENDOR := Globitel
++  DEVICE_MODEL := BT-R320
++  DEVICE_DTS := mt7981b-globitel-bt-r320
++  DEVICE_DTS_DIR := ../dts
++  DEVICE_PACKAGES := kmod-usb3 kmod-mt7915e kmod-mt7981-firmware mt7981-wo-firmware f2fsck mkf2fs
++  KERNEL_LOADADDR := 0x44000000
++  KERNEL := kernel-bin | lzma
++  KERNEL_INITRAMFS := kernel-bin | lzma | \
++	fit lzma $$(KDIR)/image-$$(firstword $$(DEVICE_DTS)).dtb with-initrd | pad-to 64k
++  KERNEL_INITRAMFS_SUFFIX := -initramfs-recovery.itb
++  IMAGES := sysupgrade.itb
++  IMAGE_SIZE := $$(shell expr 64 + $$(CONFIG_TARGET_ROOTFS_PARTSIZE))m
++  IMAGE/sysupgrade.itb := append-kernel | \
++	fit lzma $$(KDIR)/image-$$(firstword $$(DEVICE_DTS)).dtb external-static-with-rootfs | \
++	pad-rootfs | append-metadata
++  ARTIFACTS := gpt.bin preloader.bin bl31-uboot.fip
++  ARTIFACT/gpt.bin := mt798x-gpt emmc
++  ARTIFACT/preloader.bin := mt7981-bl2 emmc-ddr4
++  ARTIFACT/bl31-uboot.fip := mt7981-bl31-uboot globitel_bt-r320
++endef
++TARGET_DEVICES += globitel_bt-r320
++
+ define Device/h3c_magic-nx30-pro
+   DEVICE_VENDOR := H3C
+   DEVICE_MODEL := Magic NX30 Pro

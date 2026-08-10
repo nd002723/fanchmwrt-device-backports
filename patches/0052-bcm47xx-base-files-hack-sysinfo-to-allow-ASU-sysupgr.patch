@@ -1,0 +1,204 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Mario=20Andr=C3=A9s=20P=C3=A9rez?= <mapb_@outlook.com>
+Date: Sun, 24 May 2026 00:42:47 +0200
+Subject: [PATCH] bcm47xx: base-files: hack sysinfo to allow ASU sysupgrades
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+This old platform(no DTS) is using nvram numeric fields (or "unknown"
+string) for its board_name [1]. Allow ASU sysupgrades by preserving
+that value in /tmp/sysinfo/boardtype for board-detection/configuration
+logic, and derive a canonical board_name from /tmp/sysinfo/model in
+the form "vendor,device-variant".
+
+Only a few target profile image names are not consistent in the last
+suffix, uniform them.
+
+A few images with (NA) and (ROW) variants are only meant to be
+compatible with the upgrade process in the OEM firmware using these
+NETGEAR_BOARD_ID and NETGEAR_REGION fields but the images are
+compatibles(only if the NETGEAR_BOARD_ID is shared,due to platform
+check) [2] (i.e. netgear_wnr3500l).
+Add SUPPORTED_DEVICES to one of these variant in order to allow ASU
+sysupgrade profile identification.
+
+*Since this target has never implemented fwtool's SUPPORTED_DEVICES
+metadata check, there is no risk of breaking forceless sysupgrade with
+new board_name values.
+
+[1]: bcm47xx board info https://github.com/gregkh/linux/blob/master/arch/mips/bcm47xx/board.c
+[2]: sysupgrade platform check https://github.com/openwrt/openwrt/blob/main/target/linux/bcm47xx/base-files/lib/upgrade/platform.sh
+
+Fixes: 7d10f2c1e851 "brcm47xx: rework model detection"
+Fixes: https://github.com/openwrt/asu/issues/419 (Netgear wnr3500L)
+Closes: https://github.com/openwrt/asu/issues/878
+Fixes: https://github.com/openwrt/asu/issues/1042 (Asus RT-N16)
+Fixes: https://forum.openwrt.org/t/luci-attended-sysupgrade-support-thread/230552/115 (Asus RT-N16)
+
+Signed-off-by: Mario Andrés Pérez <mapb_@outlook.com>
+Link: https://github.com/openwrt/openwrt/pull/21147
+Signed-off-by: Hauke Mehrtens <hauke@hauke-m.de>
+---
+ .../bcm47xx/base-files/etc/board.d/01_network |  2 +-
+ .../bcm47xx/base-files/lib/preinit/01_sysinfo | 11 +++++-
+ target/linux/bcm47xx/image/mips74k.mk         | 39 ++++++++++---------
+ 3 files changed, 32 insertions(+), 20 deletions(-)
+
+diff --git a/target/linux/bcm47xx/base-files/etc/board.d/01_network b/target/linux/bcm47xx/base-files/etc/board.d/01_network
+index bcc3af57f8d..e50a88b3869 100644
+--- a/target/linux/bcm47xx/base-files/etc/board.d/01_network
++++ b/target/linux/bcm47xx/base-files/etc/board.d/01_network
+@@ -196,7 +196,7 @@ configure_by_model() {
+ 
+ 
+ model="$(cat /tmp/sysinfo/model)"
+-boardtype="$(board_name)"
++boardtype="$(cat /tmp/sysinfo/boardtype)"
+ 
+ case "$boardtype" in
+ 	*:*)
+diff --git a/target/linux/bcm47xx/base-files/lib/preinit/01_sysinfo b/target/linux/bcm47xx/base-files/lib/preinit/01_sysinfo
+index 7cd0da5aaba..4cdd1ccf08f 100644
+--- a/target/linux/bcm47xx/base-files/lib/preinit/01_sysinfo
++++ b/target/linux/bcm47xx/base-files/lib/preinit/01_sysinfo
+@@ -7,8 +7,17 @@ do_sysinfo_bcm47xx() {
+ 	[ -z "$boardtype" ] && boardtype="unknown"
+ 
+ 	[ -e "/tmp/sysinfo/" ] || mkdir -p "/tmp/sysinfo/"
+-	echo "$boardtype${boardnum:+:$boardnum}" > /tmp/sysinfo/board_name
++	echo "$boardtype${boardnum:+:$boardnum}" > /tmp/sysinfo/boardtype
+ 	echo "$model" > /tmp/sysinfo/model
++	# Generate board_name in the form <vendor,device-variant> for ASU sysupgrades
++	printf '%s' "$model" | awk '{
++		$0 = tolower($0);
++		if (NF>=2) {
++			sub(/ /, ",");
++			gsub(/ /, "-");
++		}
++		print;
++	}' > /tmp/sysinfo/board_name
+ }
+ 
+ boot_hook_add preinit_main do_sysinfo_bcm47xx
+diff --git a/target/linux/bcm47xx/image/mips74k.mk b/target/linux/bcm47xx/image/mips74k.mk
+index 0f7610f3ddc..679487dcb26 100644
+--- a/target/linux/bcm47xx/image/mips74k.mk
++++ b/target/linux/bcm47xx/image/mips74k.mk
+@@ -211,6 +211,7 @@ define Device/linksys_e1000
+   $(Device/linksys)
+   DEVICE_ID := E100
+   VERSION := 1.1.3
++  SUPPORTED_DEVICES := linksys,e1000-v1 linksys,e1000-v2 linksys,e1000-v2.1
+   DEFAULT := n
+ endef
+ TARGET_DEVICES += linksys_e1000
+@@ -336,7 +337,7 @@ define Device/netgear_r6200-v1
+ endef
+ TARGET_DEVICES += netgear_r6200-v1
+ 
+-define Device/netgear_wgr614-v10-na
++define Device/netgear_wgr614-v10na
+   DEVICE_MODEL := WGR614
+   DEVICE_VARIANT := v10 (NA)
+   $(Device/netgear)
+@@ -344,7 +345,7 @@ define Device/netgear_wgr614-v10-na
+   NETGEAR_REGION := 2
+   DEFAULT := n
+ endef
+-TARGET_DEVICES += netgear_wgr614-v10-na
++TARGET_DEVICES += netgear_wgr614-v10na
+ 
+ define Device/netgear_wgr614-v10
+   DEVICE_MODEL := WGR614
+@@ -405,16 +406,6 @@ define Device/netgear_wndr3400-v3
+ endef
+ TARGET_DEVICES += netgear_wndr3400-v3
+ 
+-define Device/netgear_wndr3700-v3
+-  DEVICE_MODEL := WNDR3700
+-  DEVICE_VARIANT := v3
+-  DEVICE_PACKAGES := kmod-b43 $(USB2_PACKAGES)
+-  $(Device/netgear)
+-  NETGEAR_BOARD_ID := U12H194T00_NETGEAR
+-  NETGEAR_REGION := 2
+-endef
+-TARGET_DEVICES += netgear_wndr3700-v3
+-
+ define Device/netgear_wndr3400-vcna
+   DEVICE_MODEL := WNDR3400
+   DEVICE_VARIANT := vcna
+@@ -426,6 +417,16 @@ define Device/netgear_wndr3400-vcna
+ endef
+ TARGET_DEVICES += netgear_wndr3400-vcna
+ 
++define Device/netgear_wndr3700-v3
++  DEVICE_MODEL := WNDR3700
++  DEVICE_VARIANT := v3
++  DEVICE_PACKAGES := kmod-b43 $(USB2_PACKAGES)
++  $(Device/netgear)
++  NETGEAR_BOARD_ID := U12H194T00_NETGEAR
++  NETGEAR_REGION := 2
++endef
++TARGET_DEVICES += netgear_wndr3700-v3
++
+ define Device/netgear_wndr4000
+   DEVICE_MODEL := WNDR4000
+   DEVICE_VARIANT := v1
+@@ -446,18 +447,19 @@ define Device/netgear_wnr1000-v3
+ endef
+ TARGET_DEVICES += netgear_wnr1000-v3
+ 
+-define Device/netgear_wnr2000v2
++define Device/netgear_wnr2000-v2
+   DEVICE_MODEL := WNR2000
+   DEVICE_VARIANT := v2
+   DEVICE_PACKAGES := kmod-b43
+   $(Device/netgear)
+   NETGEAR_BOARD_ID := U12H114T00_NETGEAR
+   NETGEAR_REGION := 2
++  SUPPORTED_DEVICES := netgear,wnr2000
+   DEFAULT := n
+ endef
+-TARGET_DEVICES += netgear_wnr2000v2
++TARGET_DEVICES += netgear_wnr2000-v2
+ 
+-define Device/netgear_wnr3500l-v1-na
++define Device/netgear_wnr3500l-v1na
+   DEVICE_MODEL := WNR3500L
+   DEVICE_VARIANT := v1 (NA)
+   DEVICE_PACKAGES := kmod-b43 $(USB2_PACKAGES)
+@@ -465,7 +467,7 @@ define Device/netgear_wnr3500l-v1-na
+   NETGEAR_BOARD_ID := U12H136T99_NETGEAR
+   NETGEAR_REGION := 2
+ endef
+-TARGET_DEVICES += netgear_wnr3500l-v1-na
++TARGET_DEVICES += netgear_wnr3500l-v1na
+ 
+ define Device/netgear_wnr3500l-v1
+   DEVICE_MODEL := WNR3500L
+@@ -474,6 +476,7 @@ define Device/netgear_wnr3500l-v1
+   $(Device/netgear)
+   NETGEAR_BOARD_ID := U12H136T99_NETGEAR
+   NETGEAR_REGION := 1
++  SUPPORTED_DEVICES := netgear,wnr3500l
+ endef
+ TARGET_DEVICES += netgear_wnr3500l-v1
+ 
+@@ -510,7 +513,7 @@ define Device/netgear_wnr3500-v2
+ endef
+ TARGET_DEVICES += netgear_wnr3500-v2
+ 
+-define Device/netgear_wnr3500-v2-vc
++define Device/netgear_wnr3500-v2vc
+   DEVICE_MODEL := WNR3500
+   DEVICE_VARIANT := v2 (VC)
+   DEVICE_PACKAGES := kmod-b43
+@@ -519,6 +522,6 @@ define Device/netgear_wnr3500-v2-vc
+   NETGEAR_REGION := 2
+   DEFAULT := n
+ endef
+-TARGET_DEVICES += netgear_wnr3500-v2-vc
++TARGET_DEVICES += netgear_wnr3500-v2vc
+ 
+ TARGET_DEVICES += standard standard-noloader-nodictionarylzma

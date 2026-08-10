@@ -1,0 +1,803 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Mikhail Zhilkin <csharper2005@gmail.com>
+Date: Wed, 20 May 2026 23:22:29 +0300
+Subject: [PATCH 53/76] mediatek: add support for netis EAP930 V1
+
+This commit adds support for netis EAP930 V1 ceiling access point.
+
+Specification
+-------------
+- SoC       : MediaTek MT7981BA dual-core ARM Cortex-A53 1.3 GHz
+- RAM       : 256 MiB DDR3 (ESMT M15T2G16128A-EFB)
+- Flash     : SPI-NAND 128 MiB (ESMT F50L1G41LB-104)
+- WLAN      : MediaTek MT7976CN dual-band WiFi 6
+  - 2.4 GHz : b/g/n/ax,  MIMO 2x2
+  - 5 GHz   : a/n/ac/ax, MIMO 2x2
+- Ethernet  : 10/100/1000 Mbps x1 (SoC internal phy)
+- USB       : No
+- Buttons   : Reset
+- LEDs      : 1x Status (red), gpio-controlled
+              1x Status (blue), gpio-controlled
+- Power     : 48 VDC (PoE) or 12 VDC, 1.5 A
+
+Installation
+------------
+1. Connect to the access point using ssh (user: admin, pass: web interface
+   password)
+2. Make mtd backup:
+   cat /dev/mtd0 | gzip -1 -c > /tmp/mtd0_spi0.0.bin.gz
+   cat /dev/mtd1 | gzip -1 -c > /tmp/mtd1_BL2.bin.gz
+   cat /dev/mtd2 | gzip -1 -c > /tmp/mtd2_u-boot-env.bin.gz
+   cat /dev/mtd3 | gzip -1 -c > /tmp/mtd3_Factory.bin.gz
+   cat /dev/mtd4 | gzip -1 -c > /tmp/mtd4_FIP.bin.gz
+   cat /dev/mtd5 | gzip -1 -c > /tmp/mtd5_ubi.bin.gz
+3. Download mtd backup from the /tmp dir of the router to your PC using
+   scp protocol
+4. Upload OpenWrt 'bl31-uboot.fip', 'preloader.bin' images to the /tmp
+   dir of the router using scp protocol
+5. Write FIP and BL2 (replace bootloader):
+   mtd write /tmp/bl31-uboot.fip FIP
+   mtd write /tmp/preloader.bin spi0.0
+6. Place OpenWrt
+   'openwrt-mediatek-filogic-netis_eap930-v1-initramfs-recovery.itb' image
+   on the tftp server (IP: 192.168.1.254)
+7. Erase 'ubi' partition and reboot the router:
+   mtd erase ubi
+   reboot
+8. U-Boot automatically boot OpenWrt recovery image from tftp server to
+   the RAM (1 Gbps link is required)
+9. Upload OpenWrt 'sysupgrade.itb' image to the /tmp dir of the router
+   (IP: 192.168.1.1) using scp protocol
+10. Connect to the router using ssh and run:
+    sysupgrade -n squashfs-sysupgrade.itb
+
+Recovery
+--------
+1. Place OpenWrt
+   'openwrt-mediatek-filogic-netis_eap930-v1-initramfs-recovery.itb' image
+   on the tftp server (IP: 192.168.1.254)
+2. Press Reset button and power on the router. After ~10 sec release
+   the button.
+3. Use OpenWrt initramfs system for recovery
+
+Return to stock
+---------------
+1. Upload stock BL2, FIP, ubi partitions backup archives to the /tmp dir
+   of the router using scp protocol
+2. Connect to the router using ssh and run:
+   apk update && apk add kmod-mtd-rw
+   insmod mtd-rw i_want_a_brick=1
+   mtd unlock BL2
+   mtd unlock FIP
+4. Restore backups:
+   zcat /tmp/mtd1_BL2.bin.gz | mtd write - BL2
+   zcat /tmp/mtd4_FIP.bin.gz | mtd write - FIP
+   zcat /tmp/mtd5_ubi.bin.gz | mtd write - ubi
+3. Reboot the router:
+   reboot
+
+UART
+----
+Connection parameters: 115200, 8N1, 3.3V
+UART pins are silkscreened on the PCB.
+
+MAC addresses
+-------------
++---------+-------------------+-----------+
+|         | MAC               | Algorithm |
++---------+-------------------+-----------+
+| LAN     | 88:xx:xx:88:xx:d3 | label     |
+| WLAN 2g | 88:xx:xx:18:xx:d4 |           |
+| WLAN 5g | 88:xx:xx:78:xx:d4 |           |
++---------+-------------------+-----------+
+The LAN MAC (hex) was found in 'Factory', 0x1fef20
+The WLAN 2g/5g MAC prototype (hex) was found in 'Factory', 0x4
+
+Signed-off-by: Mikhail Zhilkin <csharper2005@gmail.com>
+Link: https://github.com/openwrt/openwrt/pull/23133
+Signed-off-by: Hauke Mehrtens <hauke@hauke-m.de>
+---
+ package/boot/uboot-mediatek/Makefile          |  13 +
+ .../patches/469-add-netis-eap930-v1.patch     | 328 ++++++++++++++++++
+ .../uboot-envtools/files/mediatek_filogic     |   1 +
+ .../mediatek/dts/mt7981b-netis-eap930-v1.dts  | 221 ++++++++++++
+ .../filogic/base-files/etc/board.d/02_network |   3 +-
+ .../etc/hotplug.d/ieee80211/11_fix_wifi_mac   |   7 +
+ .../base-files/lib/upgrade/platform.sh        |   2 +
+ target/linux/mediatek/image/filogic.mk        |  25 ++
+ 8 files changed, 599 insertions(+), 1 deletion(-)
+ create mode 100644 package/boot/uboot-mediatek/patches/469-add-netis-eap930-v1.patch
+ create mode 100644 target/linux/mediatek/dts/mt7981b-netis-eap930-v1.dts
+
+diff --git a/package/boot/uboot-mediatek/Makefile b/package/boot/uboot-mediatek/Makefile
+index 30757a93b3d..7bd75eeb7ff 100644
+--- a/package/boot/uboot-mediatek/Makefile
++++ b/package/boot/uboot-mediatek/Makefile
+@@ -481,6 +481,18 @@ define U-Boot/mt7981_konka_komi-a31
+   DEPENDS:=+trusted-firmware-a-mt7981-spim-nand-ddr3
+ endef
+ 
++define U-Boot/mt7981_netis_eap930-v1
++  NAME:=netis EAP930 V1
++  BUILD_SUBTARGET:=filogic
++  BUILD_DEVICES:=netis_eap930-v1
++  UBOOT_CONFIG:=mt7981_netis_eap930-v1
++  UBOOT_IMAGE:=u-boot.fip
++  BL2_BOOTDEV:=spim-nand
++  BL2_SOC:=mt7981
++  BL2_DDRTYPE:=ddr3
++  DEPENDS:=+trusted-firmware-a-mt7981-spim-nand-ddr3
++endef
++
+ define U-Boot/mt7981_netis_nx30v2
+   NAME:=Netis NX30V2
+   BUILD_SUBTARGET:=filogic
+@@ -1236,6 +1248,7 @@ UBOOT_TARGETS := \
+ 	mt7981_imou_hx21 \
+ 	mt7981_jcg_q30-pro \
+ 	mt7981_konka_komi-a31 \
++	mt7981_netis_eap930-v1 \
+ 	mt7981_netis_nx30v2 \
+ 	mt7981_netis_nx31 \
+ 	mt7981_netis_nx32u \
+diff --git a/package/boot/uboot-mediatek/patches/469-add-netis-eap930-v1.patch b/package/boot/uboot-mediatek/patches/469-add-netis-eap930-v1.patch
+new file mode 100644
+index 00000000000..eccd7e5b8d1
+--- /dev/null
++++ b/package/boot/uboot-mediatek/patches/469-add-netis-eap930-v1.patch
+@@ -0,0 +1,328 @@
++--- /dev/null
+++++ b/configs/mt7981_netis_eap930-v1_defconfig
++@@ -0,0 +1,112 @@
+++CONFIG_ARM=y
+++CONFIG_ARM_SMCCC=y
+++CONFIG_SYS_HAS_NONCACHED_MEMORY=y
+++CONFIG_POSITION_INDEPENDENT=y
+++CONFIG_ARCH_MEDIATEK=y
+++CONFIG_TEXT_BASE=0x41e00000
+++CONFIG_SYS_MALLOC_F_LEN=0x4000
+++CONFIG_NR_DRAM_BANKS=1
+++CONFIG_DEFAULT_DEVICE_TREE="mt7981-netis_eap930-v1"
+++CONFIG_OF_LIBFDT_OVERLAY=y
+++CONFIG_TARGET_MT7981=y
+++CONFIG_SYS_LOAD_ADDR=0x46000000
+++CONFIG_PRE_CON_BUF_ADDR=0x4007ef00
+++CONFIG_DEBUG_UART_BASE=0x11002000
+++CONFIG_DEBUG_UART_CLOCK=40000000
+++CONFIG_DEBUG_UART=y
+++CONFIG_FIT=y
+++CONFIG_BOOTDELAY=30
+++CONFIG_AUTOBOOT_KEYED=y
+++CONFIG_AUTOBOOT_MENU_SHOW=y
+++CONFIG_USE_PREBOOT=y
+++CONFIG_DEFAULT_FDT_FILE="mediatek/mt7981-netis_eap930-v1.dtb"
+++CONFIG_LOGLEVEL=7
+++CONFIG_PRE_CONSOLE_BUFFER=y
+++CONFIG_LOG=y
+++# CONFIG_BOARD_INIT is not set
+++CONFIG_BOARD_LATE_INIT=y
+++CONFIG_HUSH_PARSER=y
+++CONFIG_SYS_PROMPT="MT7981> "
+++CONFIG_CMD_CPU=y
+++CONFIG_CMD_LICENSE=y
+++CONFIG_CMD_BOOTMENU=y
+++CONFIG_CMD_ASKENV=y
+++CONFIG_CMD_ERASEENV=y
+++CONFIG_CMD_ENV_FLAGS=y
+++CONFIG_CMD_RNG=y
+++CONFIG_CMD_STRINGS=y
+++CONFIG_CMD_DM=y
+++CONFIG_CMD_GPIO=y
+++CONFIG_CMD_GPT=y
+++CONFIG_CMD_MTD=y
+++CONFIG_CMD_PART=y
+++CONFIG_CMD_TFTPSRV=y
+++CONFIG_CMD_RARP=y
+++CONFIG_CMD_CDP=y
+++CONFIG_CMD_SNTP=y
+++CONFIG_CMD_LINK_LOCAL=y
+++CONFIG_CMD_DHCP=y
+++CONFIG_CMD_DNS=y
+++CONFIG_CMD_PING=y
+++CONFIG_CMD_PXE=y
+++CONFIG_CMD_CACHE=y
+++CONFIG_CMD_PSTORE=y
+++CONFIG_CMD_PSTORE_MEM_ADDR=0x42ff0000
+++CONFIG_CMD_UUID=y
+++CONFIG_CMD_HASH=y
+++CONFIG_CMD_SMC=y
+++CONFIG_CMD_UBI=y
+++CONFIG_CMD_UBI_RENAME=y
+++CONFIG_OF_EMBED=y
+++CONFIG_ENV_OVERWRITE=y
+++CONFIG_ENV_IS_IN_UBI=y
+++CONFIG_ENV_REDUNDANT=y
+++CONFIG_ENV_UBI_PART="ubi"
+++CONFIG_ENV_UBI_VOLUME="ubootenv"
+++CONFIG_ENV_UBI_VOLUME_REDUND="ubootenv2"
+++CONFIG_ENV_RELOC_GD_ENV_ADDR=y
+++CONFIG_ENV_USE_DEFAULT_ENV_TEXT_FILE=y
+++CONFIG_ENV_DEFAULT_ENV_TEXT_FILE="defenvs/netis_eap930-v1_env"
+++CONFIG_ENV_VARS_UBOOT_RUNTIME_CONFIG=y
+++CONFIG_VERSION_VARIABLE=y
+++CONFIG_NETCONSOLE=y
+++CONFIG_USE_IPADDR=y
+++CONFIG_IPADDR="192.168.1.1"
+++CONFIG_USE_SERVERIP=y
+++CONFIG_SERVERIP="192.168.1.254"
+++CONFIG_NET_RANDOM_ETHADDR=y
+++CONFIG_BUTTON=y
+++CONFIG_BUTTON_GPIO=y
+++CONFIG_CLK=y
+++CONFIG_GPIO_HOG=y
+++CONFIG_LED=y
+++CONFIG_LED_BLINK=y
+++CONFIG_LED_GPIO=y
+++# CONFIG_MMC is not set
+++CONFIG_MTD=y
+++CONFIG_DM_MTD=y
+++CONFIG_MTD_SPI_NAND=y
+++CONFIG_MTD_UBI_FASTMAP=y
+++CONFIG_PHY_FIXED=y
+++CONFIG_MEDIATEK_ETH=y
+++CONFIG_PHY=y
+++CONFIG_PHY_MTK_TPHY=y
+++CONFIG_PINCTRL=y
+++CONFIG_PINCONF=y
+++CONFIG_PINCTRL_MT7981=y
+++CONFIG_POWER_DOMAIN=y
+++CONFIG_MTK_POWER_DOMAIN=y
+++CONFIG_DM_REGULATOR=y
+++CONFIG_DM_REGULATOR_FIXED=y
+++CONFIG_DM_REGULATOR_GPIO=y
+++CONFIG_RAM=y
+++CONFIG_DM_RNG=y
+++CONFIG_RNG_MTK_V2=y
+++CONFIG_DM_SERIAL=y
+++CONFIG_SERIAL_RX_BUFFER=y
+++CONFIG_MTK_SERIAL=y
+++CONFIG_SPI=y
+++CONFIG_DM_SPI=y
+++CONFIG_MTK_SPIM=y
+++CONFIG_ZSTD=y
+++CONFIG_HEXDUMP=y
++--- /dev/null
+++++ b/arch/arm/dts/mt7981-netis_eap930-v1.dts
++@@ -0,0 +1,149 @@
+++// SPDX-License-Identifier: GPL-2.0
+++/*
+++ * Copyright (c) 2026
+++ * Author: Mikhail Zhilkin <csharper2005@gmail.com>
+++ */
+++
+++/dts-v1/;
+++#include "mt7981.dtsi"
+++#include <dt-bindings/gpio/gpio.h>
+++#include <dt-bindings/input/linux-event-codes.h>
+++
+++/ {
+++	#address-cells = <1>;
+++	#size-cells = <1>;
+++	model = "netis EAP930 V1";
+++	compatible = "netis,eap930-v1", "mediatek,mt7981";
+++
+++	chosen {
+++		stdout-path = &uart0;
+++		tick-timer = &timer0;
+++	};
+++
+++	memory@40000000 {
+++		device_type = "memory";
+++		reg = <0x40000000 0x10000000>;
+++	};
+++
+++	keys {
+++		compatible = "gpio-keys";
+++
+++		button-0 {
+++			label = "reset";
+++			linux,code = <KEY_RESTART>;
+++			gpios = <&pio 1 GPIO_ACTIVE_LOW>;
+++		};
+++	};
+++
+++	leds {
+++		compatible = "gpio-leds";
+++
+++		led-0 {
+++			label = "red:system";
+++			gpios = <&pio 6 GPIO_ACTIVE_LOW>;
+++		};
+++
+++		led-1 {
+++			label = "blue:system";
+++			gpios = <&pio 7 GPIO_ACTIVE_LOW>;
+++		};
+++	};
+++};
+++
+++&uart0 {
+++	mediatek,force-highspeed;
+++	status = "okay";
+++};
+++
+++&eth {
+++	status = "okay";
+++	mediatek,gmac-id = <1>;
+++	phy-mode = "gmii";
+++	phy-handle = <&int_gbe_phy>;
+++
+++	mdio {
+++		int_gbe_phy: ethernet-phy@0 {
+++			reg = <0>;
+++			compatible = "ethernet-phy-ieee802.3-c22";
+++			phy-mode = "gmii";
+++			phy-is-integrated;
+++		};
+++	};
+++};
+++
+++&pio {
+++	spi_flash_pins: spi0-pins-func-1 {
+++		mux {
+++			function = "flash";
+++			groups = "spi0", "spi0_wp_hold";
+++		};
+++
+++		conf-pu {
+++			pins = "SPI0_CS", "SPI0_HOLD", "SPI0_WP";
+++			drive-strength = <MTK_DRIVE_8mA>;
+++			bias-pull-up = <MTK_PUPD_SET_R1R0_11>;
+++		};
+++
+++		conf-pd {
+++			pins = "SPI0_CLK", "SPI0_MOSI", "SPI0_MISO";
+++			drive-strength = <MTK_DRIVE_8mA>;
+++			bias-pull-down = <MTK_PUPD_SET_R1R0_11>;
+++		};
+++	};
+++};
+++
+++&spi0 {
+++	#address-cells = <1>;
+++	#size-cells = <0>;
+++	pinctrl-names = "default";
+++	pinctrl-0 = <&spi_flash_pins>;
+++	status = "okay";
+++	must_tx;
+++	enhance_timing;
+++	dma_ext;
+++	ipm_design;
+++	support_quad;
+++	tick_dly = <2>;
+++	sample_sel = <0>;
+++
+++	spi_nand@0 {
+++		compatible = "spi-nand";
+++		reg = <0>;
+++		spi-max-frequency = <52000000>;
+++
+++		partitions {
+++			compatible = "fixed-partitions";
+++			#address-cells = <1>;
+++			#size-cells = <1>;
+++
+++			partition@0 {
+++				label = "BL2";
+++				reg = <0x0 0x100000>;
+++			};
+++
+++			partition@100000 {
+++				label = "u-boot-env";
+++				reg = <0x100000 0x80000>;
+++			};
+++
+++			partition@180000 {
+++				label = "Factory";
+++				reg = <0x180000 0x200000>;
+++			};
+++
+++			partition@380000 {
+++				label = "FIP";
+++				reg = <0x380000 0x200000>;
+++			};
+++
+++			partition@580000 {
+++				label = "ubi";
+++				reg = <0x580000 0x7a80000>;
+++			};
+++		};
+++	};
+++};
+++
+++&watchdog {
+++	status = "disabled";
+++};
++--- /dev/null
+++++ b/defenvs/netis_eap930-v1_env
++@@ -0,0 +1,58 @@
+++ipaddr=192.168.1.1
+++serverip=192.168.1.254
+++loadaddr=0x46000000
+++console=earlycon=uart8250,mmio32,0x11002000 console=ttyS0
+++bootcmd=run check_buttons ; if pstore check ; then run boot_recovery ; else run boot_ubi ; fi
+++bootconf=config-1
+++bootdelay=0
+++bootfile=openwrt-mediatek-filogic-netis_eap930-v1-initramfs-recovery.itb
+++bootfile_bl2=openwrt-mediatek-filogic-netis_eap930-v1-preloader.bin
+++bootfile_fip=openwrt-mediatek-filogic-netis_eap930-v1-bl31-uboot.fip
+++bootfile_upg=openwrt-mediatek-filogic-netis_eap930-v1-squashfs-sysupgrade.itb
+++bootled_status=red:system
+++bootmenu_confirm_return=askenv - Press ENTER to return to menu ; bootmenu 60
+++bootmenu_default=0
+++bootmenu_delay=0
+++bootmenu_title=      [0;34m( ( ( [1;39mOpenWrt[0;34m ) ) )
+++bootmenu_0=Initialize environment.=run _firstboot
+++bootmenu_0d=Run default boot command.=run boot_default
+++bootmenu_1=Boot system via TFTP.=run boot_tftp ; run bootmenu_confirm_return
+++bootmenu_2=Boot production system from NAND.=run boot_production ; run bootmenu_confirm_return
+++bootmenu_3=Boot recovery system from NAND.=run boot_recovery ; run bootmenu_confirm_return
+++bootmenu_4=Load production system via TFTP then write to NAND.=setenv noboot 1 ; setenv replacevol 1 ; run boot_tftp_production ; setenv noboot ; setenv replacevol ; run bootmenu_confirm_return
+++bootmenu_5=Load recovery system via TFTP then write to NAND.=setenv noboot 1 ; setenv replacevol 1 ; run boot_tftp_recovery ; setenv noboot ; setenv replacevol ; run bootmenu_confirm_return
+++bootmenu_6=[31mLoad BL31+U-Boot FIP via TFTP then write to NAND.[0m=run boot_tftp_write_fip ; run bootmenu_confirm_return
+++bootmenu_7=[31mLoad BL2 preloader via TFTP then write to NAND.[0m=run boot_tftp_write_bl2 ; run bootmenu_confirm_return
+++bootmenu_8=Reboot.=reset
+++bootmenu_9=Reset all settings to factory defaults.=run reset_factory ; reset
+++boot_first=if button reset ; then led $bootled_status on ; run boot_default ; fi ; bootmenu
+++boot_default=if env exists flag_recover ; then else run bootcmd ; fi ; run boot_recovery ; setenv replacevol 1 ; run boot_tftp_forever
+++boot_production=led $bootled_status on ; run ubi_read_production && bootm $loadaddr#$bootconf ; led $bootled_status off
+++boot_recovery=led $bootled_status on ; run ubi_read_recovery && bootm $loadaddr#$bootconf ; led $bootled_status off
+++boot_ubi=run boot_production ; run boot_recovery ; run boot_tftp_forever
+++boot_tftp_forever=led $bootled_status on ; while true ; do run boot_tftp ; sleep 1 ; done
+++boot_tftp_production=tftpboot $loadaddr $bootfile_upg && env exists replacevol && iminfo $loadaddr && run ubi_write_production ; if env exists noboot ; then else bootm $loadaddr#$bootconf ; fi
+++boot_tftp_recovery=tftpboot $loadaddr $bootfile && env exists replacevol && iminfo $loadaddr && run ubi_write_recovery ; if env exists noboot ; then else bootm $loadaddr#$bootconf ; fi
+++boot_tftp=tftpboot $loadaddr $bootfile && bootm $loadaddr#$bootconf
+++boot_tftp_write_fip=tftpboot $loadaddr $bootfile_fip && run mtd_write_fip && run reset_factory
+++boot_tftp_write_bl2=tftpboot $loadaddr $bootfile_bl2 && run mtd_write_bl2
+++preboot=led $bootled_status on
+++check_buttons=if button reset ; then run boot_tftp ; fi
+++ethaddr_factory=mtd read Factory 0x40080000 0x1e0000 0x20000 && env readmem -b ethaddr 0x4009ef20 0x6 ; setenv ethaddr_factory
+++part_default=production
+++part_recovery=recovery
+++reset_factory=ubi part ubi ; mw $loadaddr 0x0 0x800 ; ubi write $loadaddr ubootenv 0x800 ; ubi write $loadaddr ubootenv2 0x800
+++mtd_write_fip=mtd erase FIP && mtd write FIP $loadaddr
+++mtd_write_bl2=mtd erase BL2 && mtd write BL2 $loadaddr
+++ubi_create_env=ubi check ubootenv || ubi create ubootenv 0x100000 dynamic || run ubi_format ; ubi check ubootenv2 || ubi create ubootenv2 0x100000 dynamic || run ubi_format
+++ubi_format=ubi detach ; mtd erase ubi && ubi part ubi ; reset
+++ubi_prepare_rootfs=if ubi check rootfs_data ; then else if env exists rootfs_data_max ; then ubi create rootfs_data $rootfs_data_max dynamic || ubi create rootfs_data - dynamic ; else ubi create rootfs_data - dynamic ; fi ; fi
+++ubi_read_production=ubi read $loadaddr fit && iminfo $loadaddr && run ubi_prepare_rootfs
+++ubi_read_recovery=ubi check recovery && ubi read $loadaddr recovery
+++ubi_remove_rootfs=ubi check rootfs_data && ubi remove rootfs_data
+++ubi_write_production=ubi check fit && ubi remove fit ; run ubi_remove_rootfs ; ubi create fit $filesize dynamic && ubi write $loadaddr fit $filesize
+++ubi_write_recovery=ubi check recovery && ubi remove recovery ; run ubi_remove_rootfs ; ubi create recovery $filesize dynamic && ubi write $loadaddr recovery $filesize
+++_init_env=setenv _init_env ; run ubi_create_env ; saveenv ; saveenv
+++_firstboot=setenv _firstboot ; run ethaddr_factory ; run _switch_to_menu ; run _init_env ; run boot_first
+++_switch_to_menu=setenv _switch_to_menu ; setenv bootdelay 3 ; setenv bootmenu_delay 3 ; setenv bootmenu_0 $bootmenu_0d ; setenv bootmenu_0d ; run _bootmenu_update_title
+++_bootmenu_update_title=setenv _bootmenu_update_title ; setenv bootmenu_title "$bootmenu_title       [33m$ver[0m"
+diff --git a/package/boot/uboot-tools/uboot-envtools/files/mediatek_filogic b/package/boot/uboot-tools/uboot-envtools/files/mediatek_filogic
+index f74c6ea4ab8..8cb65467ba7 100644
+--- a/package/boot/uboot-tools/uboot-envtools/files/mediatek_filogic
++++ b/package/boot/uboot-tools/uboot-envtools/files/mediatek_filogic
+@@ -40,6 +40,7 @@ konka,komi-a31|\
+ mercusys,mr90x-v1-ubi|\
+ netcore,n60|\
+ netcore,n60-pro|\
++netis,eap930-v1|\
+ netis,nx30v2|\
+ netis,nx31|\
+ netis,nx32u|\
+diff --git a/target/linux/mediatek/dts/mt7981b-netis-eap930-v1.dts b/target/linux/mediatek/dts/mt7981b-netis-eap930-v1.dts
+new file mode 100644
+index 00000000000..de141f01c86
+--- /dev/null
++++ b/target/linux/mediatek/dts/mt7981b-netis-eap930-v1.dts
+@@ -0,0 +1,221 @@
++// SPDX-License-Identifier: GPL-2.0-only OR MIT
++
++/dts-v1/;
++#include <dt-bindings/gpio/gpio.h>
++#include <dt-bindings/input/input.h>
++#include <dt-bindings/leds/common.h>
++
++#include "mt7981b.dtsi"
++
++/ {
++	model = "netis EAP930 V1";
++	compatible = "netis,eap930-v1", "mediatek,mt7981";
++
++	aliases {
++		label-mac-device = &gmac1;
++
++		led-boot = &led_status_red;
++		led-failsafe = &led_status_red;
++		led-running = &led_status_blue;
++		led-upgrade = &led_status_red;
++
++		serial0 = &uart0;
++	};
++
++	chosen {
++		rootdisk = <&ubi_fit>;
++		stdout-path = "serial0:115200n8";
++	};
++
++	gpio-keys {
++		compatible = "gpio-keys";
++
++		button-0 {
++			label = "reset";
++			gpios = <&pio 1 GPIO_ACTIVE_LOW>;
++			linux,code = <KEY_RESTART>;
++			debounce-interval = <60>;
++		};
++	};
++
++	leds {
++		compatible = "gpio-leds";
++
++		led_status_red: led-0 {
++			color = <LED_COLOR_ID_RED>;
++			function = LED_FUNCTION_STATUS;
++			gpios = <&pio 6 GPIO_ACTIVE_LOW>;
++		};
++
++		led_status_blue: led-1 {
++			color = <LED_COLOR_ID_BLUE>;
++			function = LED_FUNCTION_STATUS;
++			gpios = <&pio 7 GPIO_ACTIVE_LOW>;
++		};
++	};
++
++	memory@40000000 {
++		reg = <0 0x40000000 0 0x10000000>;
++		device_type = "memory";
++	};
++};
++
++&crypto {
++	status = "okay";
++};
++
++&eth {
++	status = "okay";
++
++	mac@0 {
++		status = "disabled";
++	};
++
++	gmac1: mac@1 {
++		compatible = "mediatek,eth-mac";
++		reg = <1>;
++		phy-mode = "gmii";
++		phy-handle = <&int_gbe_phy>;
++
++		label = "lan";
++		nvmem-cell-names = "mac-address";
++		nvmem-cells = <&macaddr_factory_1fef20 (0)>;
++	};
++};
++
++&spi0 {
++	pinctrl-names = "default";
++	pinctrl-0 = <&spi0_flash_pins>;
++	status = "okay";
++
++	spi_nand@0 {
++		compatible = "spi-nand";
++		reg = <0>;
++
++		spi-max-frequency = <52000000>;
++		spi-tx-bus-width = <4>;
++		spi-rx-bus-width = <4>;
++
++		spi-cal-enable;
++		spi-cal-mode = "read-data";
++		spi-cal-datalen = <7>;
++		spi-cal-data = /bits/ 8 <0x53 0x50 0x49 0x4e 0x41 0x4e 0x44>;
++		spi-cal-addrlen = <5>;
++		spi-cal-addr = /bits/ 32 <0x0 0x0 0x0 0x0 0x0>;
++
++		partitions {
++			compatible = "fixed-partitions";
++			#address-cells = <1>;
++			#size-cells = <1>;
++
++			partition@0 {
++				label = "BL2";
++				reg = <0x0 0x100000>;
++				read-only;
++			};
++
++			partition@100000 {
++				label = "u-boot-env";
++				reg = <0x100000 0x80000>;
++				read-only;
++			};
++
++			factory: partition@180000 {
++				label = "Factory";
++				reg = <0x180000 0x200000>;
++				read-only;
++			};
++
++			partition@380000 {
++				label = "FIP";
++				reg = <0x380000 0x200000>;
++				read-only;
++			};
++
++			partition@580000 {
++				label = "ubi";
++				reg = <0x580000 0x7a80000>;
++				compatible = "linux,ubi";
++
++				volumes {
++					ubi_fit: ubi-volume-fit {
++						volname = "fit";
++					};
++
++					ubi_env: ubi-volume-ubootenv {
++						volname = "ubootenv";
++					};
++
++					ubi_env2: ubi-volume-ubootenv2 {
++						volname = "ubootenv2";
++					};
++				};
++			};
++		};
++	};
++};
++
++&factory {
++	nvmem-layout {
++		compatible = "fixed-layout";
++		#address-cells = <1>;
++		#size-cells = <1>;
++
++		eeprom_factory_0: eeprom@0 {
++			reg = <0x0 0x1000>;
++		};
++
++		macaddr_factory_1fef20: macaddr@1fef20 {
++			compatible = "mac-base";
++			reg = <0x1fef20 0x6>;
++			#nvmem-cell-cells = <1>;
++		};
++	};
++};
++
++&pio {
++	spi0_flash_pins: spi0-pins {
++		mux {
++			function = "spi";
++			groups = "spi0", "spi0_wp_hold";
++		};
++
++		conf-pu {
++			pins = "SPI0_CS", "SPI0_HOLD", "SPI0_WP";
++			drive-strength = <MTK_DRIVE_8mA>;
++			bias-pull-up = <MTK_PUPD_SET_R1R0_11>;
++		};
++
++		conf-pd {
++			pins = "SPI0_CLK", "SPI0_MOSI", "SPI0_MISO";
++			drive-strength = <MTK_DRIVE_8mA>;
++			bias-pull-down = <MTK_PUPD_SET_R1R0_11>;
++		};
++	};
++};
++
++&uart0 {
++	status = "okay";
++};
++
++&ubi_env {
++	nvmem-layout {
++		compatible = "u-boot,env-redundant-bool-layout";
++	};
++};
++
++&ubi_env2 {
++	nvmem-layout {
++		compatible = "u-boot,env-redundant-bool-layout";
++	};
++};
++
++&watchdog {
++	status = "okay";
++};
++
++&wifi {
++	status = "okay";
++	nvmem-cell-names = "eeprom";
++	nvmem-cells = <&eeprom_factory_0>;
++};
+diff --git a/target/linux/mediatek/filogic/base-files/etc/board.d/02_network b/target/linux/mediatek/filogic/base-files/etc/board.d/02_network
+index ff75455a10f..37d7fc8596e 100644
+--- a/target/linux/mediatek/filogic/base-files/etc/board.d/02_network
++++ b/target/linux/mediatek/filogic/base-files/etc/board.d/02_network
+@@ -163,7 +163,8 @@ mediatek_setup_interfaces()
+ 	openwrt,one)
+ 		ucidef_set_interfaces_lan_wan eth1 eth0
+ 		;;
+-	dlink,aquila-pro-ai-e30-a1)
++	dlink,aquila-pro-ai-e30-a1|\
++	netis,eap930-v1)
+ 		ucidef_set_interface_lan "lan"
+ 		;;
+ 	dlink,aquila-pro-ai-m30-a1|\
+diff --git a/target/linux/mediatek/filogic/base-files/etc/hotplug.d/ieee80211/11_fix_wifi_mac b/target/linux/mediatek/filogic/base-files/etc/hotplug.d/ieee80211/11_fix_wifi_mac
+index cfca6d52d1f..6bb44562de8 100644
+--- a/target/linux/mediatek/filogic/base-files/etc/hotplug.d/ieee80211/11_fix_wifi_mac
++++ b/target/linux/mediatek/filogic/base-files/etc/hotplug.d/ieee80211/11_fix_wifi_mac
+@@ -199,6 +199,13 @@ case "$board" in
+ 		[ "$PHYNBR" = "0" ] && macaddr_add $hw_mac_addr 2 > /sys${DEVPATH}/macaddress
+ 		[ "$PHYNBR" = "1" ] && macaddr_add $hw_mac_addr 3 > /sys${DEVPATH}/macaddress
+ 		;;
++	netis,eap930-v1)
++		addr=$(macaddr_unsetbit $(mtd_get_mac_binary "Factory" 0x4) 25)
++		addr_2g=$(macaddr_setbit $addr 28)
++		addr_5g=$(macaddr_setbit $(macaddr_setbit $addr_2g 26) 27)
++		[ "$PHYNBR" = "0" ] && echo "$addr_2g" > /sys${DEVPATH}/macaddress
++		[ "$PHYNBR" = "1" ] && echo "$addr_5g" > /sys${DEVPATH}/macaddress
++		;;
+ 	netis,nx31|\
+ 	netis,nx32u)
+ 		addr=$(mtd_get_mac_binary "Factory" 0x4)
+diff --git a/target/linux/mediatek/filogic/base-files/lib/upgrade/platform.sh b/target/linux/mediatek/filogic/base-files/lib/upgrade/platform.sh
+index d65de074ebd..8bd2084f6b5 100644
+--- a/target/linux/mediatek/filogic/base-files/lib/upgrade/platform.sh
++++ b/target/linux/mediatek/filogic/base-files/lib/upgrade/platform.sh
+@@ -162,6 +162,7 @@ platform_do_upgrade() {
+ 	mediatek,mt7981-rfb|\
+ 	mediatek,mt7988a-rfb|\
+ 	mercusys,mr90x-v1-ubi|\
++	netis,eap930-v1|\
+ 	netis,nx30v2|\
+ 	netis,nx31|\
+ 	netis,nx32u|\
+@@ -373,6 +374,7 @@ platform_check_image() {
+ 	mediatek,mt7988a-rfb|\
+ 	mercusys,mr90x-v1-ubi|\
+ 	nokia,ea0326gmp|\
++	netis,eap930-v1|\
+ 	netis,nx32u|\
+ 	openwrt,one|\
+ 	netcore,n60|\
+diff --git a/target/linux/mediatek/image/filogic.mk b/target/linux/mediatek/image/filogic.mk
+index 9a2885c63cb..f9a923a5820 100644
+--- a/target/linux/mediatek/image/filogic.mk
++++ b/target/linux/mediatek/image/filogic.mk
+@@ -2662,6 +2662,31 @@ define Device/netgear_wax220
+ endef
+ TARGET_DEVICES += netgear_wax220
+ 
++define Device/netis_eap930-v1
++  DEVICE_VENDOR := netis
++  DEVICE_MODEL := EAP930 V1
++  DEVICE_DTS := mt7981b-netis-eap930-v1
++  DEVICE_DTS_DIR := ../dts
++  UBINIZE_OPTS := -E 5
++  BLOCKSIZE := 128k
++  PAGESIZE := 2048
++  KERNEL_IN_UBI := 1
++  UBOOTENV_IN_UBI := 1
++  IMAGES := sysupgrade.itb
++  KERNEL_INITRAMFS_SUFFIX := -recovery.itb
++  KERNEL := kernel-bin | gzip
++  KERNEL_INITRAMFS := kernel-bin | lzma | \
++	fit lzma $$(KDIR)/image-$$(firstword $$(DEVICE_DTS)).dtb with-initrd | pad-to 64k
++  IMAGE/sysupgrade.itb := append-kernel | \
++	fit gzip $$(KDIR)/image-$$(firstword $$(DEVICE_DTS)).dtb external-static-with-rootfs | \
++	append-metadata
++  DEVICE_PACKAGES := kmod-mt7915e kmod-mt7981-firmware mt7981-wo-firmware
++  ARTIFACTS := preloader.bin bl31-uboot.fip
++  ARTIFACT/preloader.bin := mt7981-bl2 spim-nand-ddr3
++  ARTIFACT/bl31-uboot.fip := mt7981-bl31-uboot netis_eap930-v1
++endef
++TARGET_DEVICES += netis_eap930-v1
++
+ define Device/netis_nx30v2
+   DEVICE_VENDOR := Netis
+   DEVICE_MODEL := NX30V2

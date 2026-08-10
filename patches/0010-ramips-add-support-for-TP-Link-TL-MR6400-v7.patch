@@ -1,0 +1,280 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Miguel Fuertes <mjfuertesf@gmail.com>
+Date: Sun, 18 Jan 2026 16:51:22 +0100
+Subject: [PATCH 10/76] ramips: add support for TP-Link TL-MR6400 v7
+
+Add DTS files for the TL-MR6400 v7 16M layout.
+
+Update mt76x8 image definition and adjust LED/network config.
+
+Signed-off-by: Miguel Fuertes <mjfuertesf@gmail.com>
+Link: https://github.com/openwrt/openwrt/pull/21542
+Signed-off-by: Hauke Mehrtens <hauke@hauke-m.de>
+---
+ .../linux/ramips/dts/mt7628an_tplink_16m.dtsi |  76 ++++++++++++
+ .../dts/mt7628an_tplink_tl-mr6400-v7.dts      | 115 ++++++++++++++++++
+ target/linux/ramips/image/mt76x8.mk           |  16 +++
+ .../mt76x8/base-files/etc/board.d/01_leds     |   3 +-
+ .../mt76x8/base-files/etc/board.d/02_network  |   3 +-
+ 5 files changed, 211 insertions(+), 2 deletions(-)
+ create mode 100644 target/linux/ramips/dts/mt7628an_tplink_16m.dtsi
+ create mode 100644 target/linux/ramips/dts/mt7628an_tplink_tl-mr6400-v7.dts
+
+diff --git a/target/linux/ramips/dts/mt7628an_tplink_16m.dtsi b/target/linux/ramips/dts/mt7628an_tplink_16m.dtsi
+new file mode 100644
+index 00000000000..6d3ad0ddd02
+--- /dev/null
++++ b/target/linux/ramips/dts/mt7628an_tplink_16m.dtsi
+@@ -0,0 +1,76 @@
++// SPDX-License-Identifier: GPL-2.0-or-later OR MIT
++
++#include "mt7628an.dtsi"
++
++#include <dt-bindings/input/input.h>
++#include <dt-bindings/gpio/gpio.h>
++
++/ {
++	chosen {
++		bootargs = "console=ttyS0,115200";
++	};
++
++	aliases {
++		label-mac-device = &ethernet;
++	};
++};
++
++&spi0 {
++	status = "okay";
++
++	flash@0 {
++		compatible = "jedec,spi-nor";
++		reg = <0>;
++		spi-max-frequency = <10000000>;
++
++		partitions {
++			compatible = "fixed-partitions";
++			#address-cells = <1>;
++			#size-cells = <1>;
++
++			partition@0 {
++				label = "boot";
++				reg = <0x0 0x20000>;
++				read-only;
++			};
++
++			partition@20000 {
++				compatible = "tplink,firmware";
++				label = "firmware";
++				reg = <0x20000 0xfa0000>;
++			};
++
++			partition@fc0000 {
++				label = "config";
++				reg = <0xfc0000 0x10000>;
++				read-only;
++			};
++
++			factory: partition@fd0000 {
++				label = "factory";
++				reg = <0xfd0000 0x30000>;
++				read-only;
++
++				nvmem-layout {
++					compatible = "fixed-layout";
++					#address-cells = <1>;
++					#size-cells = <1>;
++
++					macaddr_factory_f100: macaddr@f100 {
++						compatible = "mac-base";
++						reg = <0xf100 0x6>;
++						#nvmem-cell-cells = <1>;
++					};
++
++					eeprom_factory_20000: eeprom@20000 {
++						reg = <0x20000 0x400>;
++					};
++
++					eeprom_factory_28000: eeprom@28000 {
++						reg = <0x28000 0x200>;
++					};
++				};
++			};
++		};
++	};
++};
+diff --git a/target/linux/ramips/dts/mt7628an_tplink_tl-mr6400-v7.dts b/target/linux/ramips/dts/mt7628an_tplink_tl-mr6400-v7.dts
+new file mode 100644
+index 00000000000..349d29c42c0
+--- /dev/null
++++ b/target/linux/ramips/dts/mt7628an_tplink_tl-mr6400-v7.dts
+@@ -0,0 +1,115 @@
++// SPDX-License-Identifier: GPL-2.0-or-later OR MIT
++
++#include <dt-bindings/leds/common.h>
++
++#include "mt7628an_tplink_16m.dtsi"
++
++/ {
++	compatible = "tplink,tl-mr6400-v7", "mediatek,mt7628an-soc";
++	model = "TP-Link TL-MR6400 v7";
++
++	aliases {
++		led-boot = &led_power;
++		led-failsafe = &led_power;
++		led-running = &led_power;
++		led-upgrade = &led_power;
++	};
++
++	keys {
++		compatible = "gpio-keys";
++
++		reset {
++			label = "reset";
++			gpios = <&gpio 38 GPIO_ACTIVE_LOW>;
++			linux,code = <KEY_RESTART>;
++		};
++
++		rfkill {
++			label = "rfkill";
++			gpios = <&gpio 46 GPIO_ACTIVE_LOW>;
++			linux,code = <KEY_RFKILL>;
++		};
++	};
++
++	leds {
++		compatible = "gpio-leds";
++
++		wlan {
++			function = LED_FUNCTION_WLAN;
++			color = <LED_COLOR_ID_WHITE>;
++			gpios = <&gpio 4 GPIO_ACTIVE_LOW>;
++			linux,default-trigger = "phy0tpt";
++		};
++
++		lan {
++			function = LED_FUNCTION_LAN;
++			color = <LED_COLOR_ID_WHITE>;
++			gpios = <&gpio 5 GPIO_ACTIVE_LOW>;
++		};
++
++		led_power: power {
++			function = LED_FUNCTION_POWER;
++			color = <LED_COLOR_ID_WHITE>;
++			gpios = <&gpio 39 GPIO_ACTIVE_LOW>;
++		};
++
++		wan {
++			function = LED_FUNCTION_WAN;
++			color = <LED_COLOR_ID_WHITE>;
++			gpios = <&gpio 40 GPIO_ACTIVE_LOW>;
++		};
++
++		signal1 {
++			label = "white:signal1";
++			gpios = <&gpio 41 GPIO_ACTIVE_LOW>;
++		};
++
++		signal2 {
++			label = "white:signal2";
++			gpios = <&gpio 42 GPIO_ACTIVE_LOW>;
++		};
++
++		signal3 {
++			label = "white:signal3";
++			gpios = <&gpio 43 GPIO_ACTIVE_LOW>;
++		};
++	};
++};
++
++&state_default {
++	gpio {
++		groups = "i2c", "p0led_an", "p1led_an", "p2led_an", "p3led_an", "p4led_an", "uart1", "wdt";
++		function = "gpio";
++	};
++};
++
++&esw {
++	mediatek,portmap = <0x37>;
++	mediatek,portdisable = <0x30>;
++};
++
++&wmac {
++	status = "okay";
++
++	nvmem-cells = <&eeprom_factory_20000>, <&macaddr_factory_1f100 0>;
++	nvmem-cell-names = "eeprom", "mac-address";
++};
++
++&ethernet {
++	nvmem-cells = <&macaddr_factory_1f100 0>;
++	nvmem-cell-names = "mac-address";
++};
++
++&factory {
++	nvmem-layout {
++		compatible = "fixed-layout";
++		#address-cells = <1>;
++		#size-cells = <1>;
++
++		macaddr_factory_1f100: macaddr@1f100 {
++			compatible = "mac-base";
++			reg = <0x1f100 0x6>;
++			#nvmem-cell-cells = <1>;
++		};
++	};
++};
+diff --git a/target/linux/ramips/image/mt76x8.mk b/target/linux/ramips/image/mt76x8.mk
+index 7e6577f1ca0..a24a95815df 100644
+--- a/target/linux/ramips/image/mt76x8.mk
++++ b/target/linux/ramips/image/mt76x8.mk
+@@ -1064,6 +1064,22 @@ define Device/tplink_tl-mr6400-v5
+ endef
+ TARGET_DEVICES += tplink_tl-mr6400-v5
+ 
++define Device/tplink_tl-mr6400-v7
++  $(Device/tplink-v2)
++  IMAGE_SIZE := 15872k
++  DEVICE_MODEL := TL-MR6400
++  DEVICE_VARIANT := v7
++  TPLINK_FLASHLAYOUT := 16Mmtk
++  TPLINK_HWID := 0x64000007
++  TPLINK_HWREV := 0x7
++  TPLINK_HWREVADD := 0x7
++  DEVICE_PACKAGES := kmod-usb2 kmod-usb-ohci kmod-usb-ledtrig-usbport \
++	kmod-usb-serial-option kmod-usb-net-qmi-wwan uqmi
++  IMAGES := sysupgrade.bin tftp-recovery.bin
++  IMAGE/tftp-recovery.bin := pad-extra 128k | $$(IMAGE/factory.bin)
++endef
++TARGET_DEVICES += tplink_tl-mr6400-v7
++
+ define Device/tplink_tl-wa801nd-v5
+   $(Device/tplink-v2)
+   IMAGE_SIZE := 7808k
+diff --git a/target/linux/ramips/mt76x8/base-files/etc/board.d/01_leds b/target/linux/ramips/mt76x8/base-files/etc/board.d/01_leds
+index 3a48dbdbdb2..0a4b417fbe1 100644
+--- a/target/linux/ramips/mt76x8/base-files/etc/board.d/01_leds
++++ b/target/linux/ramips/mt76x8/base-files/etc/board.d/01_leds
+@@ -152,7 +152,8 @@ tplink,tl-mr6400-v4)
+ 	ucidef_set_led_switch "lan" "lan" "white:lan" "switch0" "0x0e"
+ 	ucidef_set_led_switch "wan" "wan" "white:wan" "switch0" "0x10"
+ 	;;
+-tplink,tl-mr6400-v5)
++tplink,tl-mr6400-v5|\
++tplink,tl-mr6400-v7)
+ 	ucidef_set_led_switch "lan" "lan" "white:lan" "switch0" "0x07"
+ 	ucidef_set_led_switch "wan" "wan" "white:wan" "switch0" "0x08"
+ 	;;
+diff --git a/target/linux/ramips/mt76x8/base-files/etc/board.d/02_network b/target/linux/ramips/mt76x8/base-files/etc/board.d/02_network
+index 56217518bc9..f292120b326 100644
+--- a/target/linux/ramips/mt76x8/base-files/etc/board.d/02_network
++++ b/target/linux/ramips/mt76x8/base-files/etc/board.d/02_network
+@@ -219,7 +219,8 @@ ramips_setup_interfaces()
+ 		ucidef_add_switch "switch0" \
+ 			"1:lan" "2:lan" "3:lan" "4:wan" "6@eth0"
+ 		;;
+-	tplink,tl-mr6400-v5)
++	tplink,tl-mr6400-v5|\
++	tplink,tl-mr6400-v7)
+ 		ucidef_add_switch "switch0" \
+ 			"0:lan" "1:lan" "2:lan" "3:wan" "6@eth0"
+ 		;;

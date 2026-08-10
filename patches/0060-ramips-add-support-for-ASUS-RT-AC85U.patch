@@ -1,0 +1,313 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: YAJIMA Hideyuki <ursmtr@gmail.com>
+Date: Sun, 21 Jun 2026 00:49:38 +0900
+Subject: [PATCH 60/76] ramips: add support for ASUS RT-AC85U
+
+This patch adds support for the ASUS RT-AC85U wireless router.
+It is a dual-band gigabit router based on the MediaTek MT7621AT SoC.
+
+MAC Address Layout:
+- LAN/WAN/2.4G/5G MAC addresses are derived from the
+  factory partition at offset 0xe000.
+
+Hardware Specifications:
+- SoC: MediaTek MT7621AT (880 MHz, 2C/4T)
+- RAM: 128 MB DDR3
+- Flash: 128 MB Winbond W29N01HV NAND
+- WI1: MediaTek MT7615E (2.4 GHz, 4x4)
+- WI2: MediaTek MT7615E (5 GHz, 4x4)
+- Switch: MediaTek MT7530 (Embedded Gigabit Switch)
+- Ports: 1x WAN, 4x LAN (10/100/1000 Mbps), 1x USB 3.0
+- LEDs: Power, LAN, WAN, 2.4G, 5G, USB, WPS
+- Buttons: WPS, Reset
+
+Installation / Flashing guide:
+1. Power off the device.
+2. Hold Reset button and power on to enter ASUS Restoration mode (slow flash LED).
+3. Set your computer's static IP to 192.168.1.x (e.g., 192.168.1.10).
+4. Upload the OpenWrt initramfs image via ASUS Restoration tool to 192.168.1.1.
+5. Wait for the device to boot into the temporary OpenWrt environment.
+6. Access LuCI (192.168.1.1) and flash sysupgrade image to make it permanent.
+
+Signed-off-by: YAJIMA Hideyuki <ursmtr@gmail.com>
+Link: https://github.com/openwrt/openwrt/pull/23747
+Signed-off-by: Robert Marko <robimarko@gmail.com>
+---
+ .../linux/ramips/dts/mt7621_asus_rt-ac85u.dts | 233 ++++++++++++++++++
+ target/linux/ramips/image/mt7621.mk           |  10 +
+ .../mt7621/base-files/lib/upgrade/platform.sh |   1 +
+ 3 files changed, 244 insertions(+)
+ create mode 100644 target/linux/ramips/dts/mt7621_asus_rt-ac85u.dts
+
+diff --git a/target/linux/ramips/dts/mt7621_asus_rt-ac85u.dts b/target/linux/ramips/dts/mt7621_asus_rt-ac85u.dts
+new file mode 100644
+index 00000000000..92bca2e14b1
+--- /dev/null
++++ b/target/linux/ramips/dts/mt7621_asus_rt-ac85u.dts
+@@ -0,0 +1,233 @@
++// SPDX-License-Identifier: GPL-2.0-or-later OR MIT
++
++#include "mt7621.dtsi"
++
++#include <dt-bindings/gpio/gpio.h>
++#include <dt-bindings/input/input.h>
++#include <dt-bindings/leds/common.h>
++
++/ {
++	compatible = "asus,rt-ac85u", "mediatek,mt7621-soc";
++	model = "ASUS RT-AC85U";
++
++	aliases {
++		led-boot = &led_power;
++		led-failsafe = &led_power;
++		led-running = &led_power;
++		led-upgrade = &led_power;
++		label-mac-device = &gmac0;
++	};
++
++	keys {
++		compatible = "gpio-keys";
++
++		reset {
++			label = "reset";
++			gpios = <&gpio 16 GPIO_ACTIVE_LOW>;
++			linux,code = <KEY_RESTART>;
++		};
++
++		wps {
++			label = "wps";
++			gpios = <&gpio 18 GPIO_ACTIVE_LOW>;
++			linux,code = <KEY_WPS_BUTTON>;
++		};
++	};
++
++	leds {
++		compatible = "gpio-leds";
++
++		led_power: power {
++			function = LED_FUNCTION_POWER;
++			color = <LED_COLOR_ID_BLUE>;
++			gpios = <&gpio 6 GPIO_ACTIVE_LOW>;
++		};
++
++		wifi2g {
++			color = <LED_COLOR_ID_BLUE>;
++			function = LED_FUNCTION_WLAN_2GHZ;
++			gpios = <&gpio 4 GPIO_ACTIVE_LOW>;
++			linux,default-trigger = "phy0tpt";
++		};
++
++		wifi5g {
++			color = <LED_COLOR_ID_BLUE>;
++			function = LED_FUNCTION_WLAN_5GHZ;
++			gpios = <&gpio 7 GPIO_ACTIVE_LOW>;
++			linux,default-trigger = "phy1tpt";
++		};
++
++		wan {
++			color = <LED_COLOR_ID_BLUE>;
++			function = LED_FUNCTION_WAN;
++			gpios = <&gpio 13 GPIO_ACTIVE_LOW>;
++		};
++
++		lan {
++			color = <LED_COLOR_ID_BLUE>;
++			function = LED_FUNCTION_LAN;
++			gpios = <&gpio 14 GPIO_ACTIVE_LOW>;
++		};
++
++		usb {
++			color = <LED_COLOR_ID_BLUE>;
++			function = LED_FUNCTION_USB;
++			gpios = <&gpio 15 GPIO_ACTIVE_LOW>;
++		};
++
++		wps {
++			color = <LED_COLOR_ID_BLUE>;
++			function = LED_FUNCTION_WPS;
++			gpios = <&gpio 12 GPIO_ACTIVE_LOW>;
++		};
++	};
++};
++
++&nand {
++	status = "okay";
++
++	partitions {
++		compatible = "fixed-partitions";
++		#address-cells = <1>;
++		#size-cells = <1>;
++
++		partition@0 {
++			label = "u-boot";
++			reg = <0x0 0xe0000>;
++			read-only;
++		};
++
++		partition@e0000 {
++			label = "u-boot-env";
++			reg = <0xe0000 0x100000>;
++			read-only;
++		};
++
++		partition@1e0000 {
++			label = "factory";
++			reg = <0x1e0000 0x100000>;
++			read-only;
++
++			nvmem-layout {
++				compatible = "fixed-layout";
++				#address-cells = <1>;
++				#size-cells = <1>;
++
++				eeprom_factory_0: eeprom@0 {
++					reg = <0x0 0x4da8>;
++				};
++
++				eeprom_factory_8000: eeprom@8000 {
++					reg = <0x8000 0x4da8>;
++				};
++
++				macaddr_factory_e000: macaddr@e000 {
++					reg = <0xe000 0x6>;
++				};
++			};
++		};
++
++		partition@2e0000 {
++			label = "factory2";
++			reg = <0x2e0000 0x100000>;
++			read-only;
++		};
++
++		partition@3e0000 {
++			label = "kernel";
++			reg = <0x3e0000 0x400000>;
++		};
++
++		partition@7e0000 {
++			label = "ubi";
++			reg = <0x7e0000 0x2e00000>;
++		};
++
++		partition@35e0000 {
++			label = "firmware2";
++			reg = <0x35e0000 0x3200000>;
++		};
++	};
++};
++
++&pcie {
++	status = "okay";
++};
++
++&pcie0 {
++	wifi0: wifi@0,0 {
++		compatible = "mediatek,mt76";
++		reg = <0x0000 0 0 0 0>;
++		nvmem-cells = <&eeprom_factory_0>;
++		nvmem-cell-names = "eeprom";
++		ieee80211-freq-limit = <2400000 2500000>;
++	};
++};
++
++&pcie1 {
++	wifi1: wifi@0,0 {
++		compatible = "mediatek,mt76";
++		reg = <0x0000 0 0 0 0>;
++		nvmem-cells = <&eeprom_factory_8000>;
++		nvmem-cell-names = "eeprom";
++		ieee80211-freq-limit = <5000000 6000000>;
++	};
++};
++
++
++&gmac0 {
++	nvmem-cells = <&macaddr_factory_e000>;
++	nvmem-cell-names = "mac-address";
++};
++
++&gmac1 {
++	status = "okay";
++	label = "wan";
++	phy-handle = <&ethphy4>;
++
++	nvmem-cells = <&macaddr_factory_e000>;
++	nvmem-cell-names = "mac-address";
++};
++
++&ethphy4 {
++	/delete-property/ interrupts;
++};
++
++&switch0 {
++	ports {
++		port@0 {
++			status = "okay";
++			label = "lan1";
++		};
++
++		port@1 {
++			status = "okay";
++			label = "lan2";
++		};
++
++		port@2 {
++			status = "okay";
++			label = "lan3";
++		};
++
++		port@3 {
++			status = "okay";
++			label = "lan4";
++		};
++
++		port@4 {
++			status = "disabled";
++		};
++	};
++};
++
++&state_default {
++	gpio {
++		groups = "uart2", "uart3", "i2c";
++		function = "gpio";
++	};
++};
++
++&xhci {
++	status = "okay";
++};
+diff --git a/target/linux/ramips/image/mt7621.mk b/target/linux/ramips/image/mt7621.mk
+index 347ab0eab3d..05251eec83c 100644
+--- a/target/linux/ramips/image/mt7621.mk
++++ b/target/linux/ramips/image/mt7621.mk
+@@ -458,6 +458,16 @@ define Device/asus_rt-ac85p
+ endef
+ TARGET_DEVICES += asus_rt-ac85p
+ 
++define Device/asus_rt-ac85u
++  $(Device/nand)
++  DEVICE_VENDOR := ASUS
++  DEVICE_MODEL := RT-AC85U
++  DEVICE_DTS := mt7621_asus_rt-ac85u
++  IMAGE_SIZE := 51200k
++  DEVICE_PACKAGES := kmod-usb3 kmod-mt7615-firmware uboot-envtools
++endef
++TARGET_DEVICES += asus_rt-ac85u
++
+ define Device/asus_rt-n56u-b1
+   $(Device/dsa-migration)
+   $(Device/uimage-lzma-loader)
+diff --git a/target/linux/ramips/mt7621/base-files/lib/upgrade/platform.sh b/target/linux/ramips/mt7621/base-files/lib/upgrade/platform.sh
+index 52617bc4264..4e1aab27634 100644
+--- a/target/linux/ramips/mt7621/base-files/lib/upgrade/platform.sh
++++ b/target/linux/ramips/mt7621/base-files/lib/upgrade/platform.sh
+@@ -73,6 +73,7 @@ platform_do_upgrade() {
+ 	arcadyan,we420223-99|\
+ 	asus,rt-ac65p|\
+ 	asus,rt-ac85p|\
++	asus,rt-ac85u|\
+ 	asus,rt-ax53u|\
+ 	asus,rt-ax54|\
+ 	asus,4g-ax56|\

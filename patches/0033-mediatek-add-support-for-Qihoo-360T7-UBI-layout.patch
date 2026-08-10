@@ -1,0 +1,736 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Mikhail Zhilkin <csharper2005@gmail.com>
+Date: Sun, 5 Apr 2026 13:47:38 +0300
+Subject: [PATCH 33/76] mediatek: add support for Qihoo 360T7 (UBI layout)
+
+This commit adds support for Qihoo 360T7 (UBI layout).
+
+Aims
+----
+1. +20 MB additional free space for the packages
+2. More reliable storage for the factory and fip partitions (in UBI)
+
+Install (from non-UBI OpenWrt)
+------------------------------
+1. Navigate http://192.168.1.1/ and download mtd backups
+2. Upgrade OpenWrt with installer initramfs image (force upgrade, don't
+   keep settings). Wait until OpenWrt reboots and until installer:
+   - Prepare new factory partition
+   - Format new ubi
+   - Make ubi volumes
+   - Write new fip and bl2
+3. Navigate http://192.168.1.1/ and Upgrade with OpenWrt 'sysupgrade.bin'
+   image (don't keep settings)
+
+Installer
+---------
+Based on OpenWrt UBI Installer Image Generator for Linksys E8450 and
+Belkin RT3200
+Link: https://github.com/dangowrt/owrt-ubi-installer
+
+Ready installer image
+Link: https://github.com/csharper2005/owrt-ubi-installer/tree/qihoo/bin
+
+Installer script
+Link: https://github.com/csharper2005/owrt-ubi-installer/blob/qihoo/files/
+installer/install.sh
+
+Committing to the parent Daniel's repository is not yet possible because
+there are no official images and imagebuilder for Qihoo 360T7 (UBI) yet.
+
+Signed-off-by: Mikhail Zhilkin <csharper2005@gmail.com>
+Link: https://github.com/openwrt/openwrt/pull/22797
+Signed-off-by: Hauke Mehrtens <hauke@hauke-m.de>
+---
+ .../uboot-envtools/files/mediatek_filogic     |   1 +
+ .../dts/mt7981b-qihoo-360t7-common.dtsi       | 186 +++++++++++++
+ .../mediatek/dts/mt7981b-qihoo-360t7-ubi.dts  | 106 ++++++++
+ .../mediatek/dts/mt7981b-qihoo-360t7.dts      | 249 +++---------------
+ .../filogic/base-files/etc/board.d/02_network |   1 +
+ .../base-files/lib/upgrade/platform.sh        |   2 +
+ target/linux/mediatek/image/filogic.mk        |  28 +-
+ 7 files changed, 355 insertions(+), 218 deletions(-)
+ create mode 100644 target/linux/mediatek/dts/mt7981b-qihoo-360t7-common.dtsi
+ create mode 100644 target/linux/mediatek/dts/mt7981b-qihoo-360t7-ubi.dts
+
+diff --git a/package/boot/uboot-tools/uboot-envtools/files/mediatek_filogic b/package/boot/uboot-tools/uboot-envtools/files/mediatek_filogic
+index 7455ac1792a..df643844960 100644
+--- a/package/boot/uboot-tools/uboot-envtools/files/mediatek_filogic
++++ b/package/boot/uboot-tools/uboot-envtools/files/mediatek_filogic
+@@ -46,6 +46,7 @@ netis,nx32u|\
+ nokia,ea0326gmp|\
+ openwrt,one|\
+ qihoo,360t7|\
++qihoo,360t7-ubi|\
+ routerich,ax3000-ubootmod|\
+ routerich,be7200|\
+ snr,snr-cpe-ax2|\
+diff --git a/target/linux/mediatek/dts/mt7981b-qihoo-360t7-common.dtsi b/target/linux/mediatek/dts/mt7981b-qihoo-360t7-common.dtsi
+new file mode 100644
+index 00000000000..d6ce722913f
+--- /dev/null
++++ b/target/linux/mediatek/dts/mt7981b-qihoo-360t7-common.dtsi
+@@ -0,0 +1,186 @@
++// SPDX-License-Identifier: GPL-2.0-or-later OR MIT
++
++/dts-v1/;
++#include <dt-bindings/gpio/gpio.h>
++#include <dt-bindings/input/input.h>
++#include <dt-bindings/leds/common.h>
++#include <dt-bindings/pinctrl/mt65xx.h>
++
++#include "mt7981b.dtsi"
++
++/ {
++	aliases: aliases {
++		led-boot = &led_status_red;
++		led-failsafe = &led_status_red;
++		led-running = &led_status_green;
++		led-upgrade = &led_status_green;
++
++		serial0 = &uart0;
++	};
++
++	chosen {
++		bootargs-append = " root=/dev/fit0 rootwait";
++		rootdisk = <&ubi_rootdisk>;
++		stdout-path = "serial0:115200n8";
++	};
++
++	memory@40000000 {
++		reg = <0 0x40000000 0 0x10000000>;
++		device_type = "memory";
++	};
++
++	gpio-keys {
++		compatible = "gpio-keys";
++
++		button-0 {
++			label = "wps";
++			linux,code = <KEY_WPS_BUTTON>;
++			gpios = <&pio 0 GPIO_ACTIVE_LOW>;
++		};
++
++		button-1 {
++			label = "reset";
++			linux,code = <KEY_RESTART>;
++			gpios = <&pio 1 GPIO_ACTIVE_LOW>;
++		};
++	};
++
++	leds {
++		compatible = "gpio-leds";
++
++		led_status_red: led-0 {
++			function = LED_FUNCTION_STATUS;
++			color = <LED_COLOR_ID_RED>;
++			gpios = <&pio 3 GPIO_ACTIVE_LOW>;
++		};
++
++		led_status_green: led-1 {
++			function = LED_FUNCTION_STATUS;
++			color = <LED_COLOR_ID_GREEN>;
++			gpios = <&pio 7 GPIO_ACTIVE_LOW>;
++		};
++	};
++};
++
++&eth {
++	status = "okay";
++
++	gmac0: mac@0 {
++		compatible = "mediatek,eth-mac";
++		reg = <0>;
++		phy-mode = "2500base-x";
++
++		fixed-link {
++			speed = <2500>;
++			full-duplex;
++			pause;
++		};
++	};
++};
++
++&mdio_bus {
++	switch: switch@1f {
++		compatible = "mediatek,mt7531";
++		reg = <31>;
++		reset-gpios = <&pio 39 GPIO_ACTIVE_HIGH>;
++		interrupt-controller;
++		#interrupt-cells = <1>;
++		interrupt-parent = <&pio>;
++		interrupts = <38 IRQ_TYPE_LEVEL_HIGH>;
++	};
++};
++
++&spi0 {
++	pinctrl-names = "default";
++	pinctrl-0 = <&spi0_flash_pins>;
++	status = "okay";
++
++	spi_nand@0 {
++		compatible = "spi-nand";
++		reg = <0>;
++
++		spi-max-frequency = <52000000>;
++		spi-tx-bus-width = <4>;
++		spi-rx-bus-width = <4>;
++
++		partitions: partitions {
++			compatible = "fixed-partitions";
++			#address-cells = <1>;
++			#size-cells = <1>;
++
++			partition@0 {
++				label = "bl2";
++				reg = <0x0 0x100000>;
++				read-only;
++			};
++		};
++	};
++};
++
++&switch {
++	ports {
++		#address-cells = <1>;
++		#size-cells = <0>;
++
++		port@0 {
++			reg = <0>;
++			label = "lan3";
++		};
++
++		port@1 {
++			reg = <1>;
++			label = "lan2";
++		};
++
++		port@2 {
++			reg = <2>;
++			label = "lan1";
++		};
++
++		wan: port@3 {
++			reg = <3>;
++			label = "wan";
++		};
++
++		port@6 {
++			reg = <6>;
++			ethernet = <&gmac0>;
++			phy-mode = "2500base-x";
++
++			fixed-link {
++				speed = <2500>;
++				full-duplex;
++				pause;
++			};
++		};
++	};
++};
++
++&pio {
++	spi0_flash_pins: spi0-pins {
++		mux {
++			function = "spi";
++			groups = "spi0", "spi0_wp_hold";
++		};
++
++		conf-pu {
++			pins = "SPI0_CS", "SPI0_HOLD", "SPI0_WP";
++			drive-strength = <MTK_DRIVE_8mA>;
++			bias-disable; /* bias-disable */
++		};
++
++		conf-pd {
++			pins = "SPI0_CLK", "SPI0_MOSI", "SPI0_MISO";
++			drive-strength = <MTK_DRIVE_8mA>;
++			bias-disable; /* bias-disable */
++		};
++	};
++};
++
++&uart0 {
++	status = "okay";
++};
++
++&watchdog {
++	status = "okay";
++};
+diff --git a/target/linux/mediatek/dts/mt7981b-qihoo-360t7-ubi.dts b/target/linux/mediatek/dts/mt7981b-qihoo-360t7-ubi.dts
+new file mode 100644
+index 00000000000..21f32c02ff8
+--- /dev/null
++++ b/target/linux/mediatek/dts/mt7981b-qihoo-360t7-ubi.dts
+@@ -0,0 +1,106 @@
++// SPDX-License-Identifier: GPL-2.0-or-later OR MIT
++
++#include "mt7981b-qihoo-360t7-common.dtsi"
++
++/ {
++	compatible = "qihoo,360t7-ubi", "mediatek,mt7981";
++	model = "Qihoo 360T7 (UBI)";
++
++	aliases {
++		label-mac-device = &wan;
++	};
++};
++
++&gmac0 {
++	nvmem-cell-names = "mac-address";
++	nvmem-cells = <&macaddr_factory_8000 (0)>;
++};
++
++&partitions {
++	partition@100000 {
++		reg = <0x100000 0x7f00000>;
++		compatible = "linux,ubi";
++		label = "ubi";
++
++		volumes {
++			ubi_factory: ubi-volume-factory {
++				volname = "factory";
++			};
++
++			ubi-volume-fip {
++				volname = "fip";
++			};
++
++			ubi_rootdisk: ubi-volume-fit {
++				volname = "fit";
++			};
++
++			ubi_ubootenv: ubi-volume-ubootenv {
++				volname = "ubootenv";
++			};
++
++			ubi_ubootenv2: ubi-volume-ubootenv2 {
++				volname = "ubootenv2";
++			};
++		};
++	};
++};
++
++&ubi_factory {
++	nvmem-layout {
++		compatible = "fixed-layout";
++		#address-cells = <1>;
++		#size-cells = <1>;
++
++		eeprom_factory_0: eeprom@0 {
++			reg = <0x0 0x1000>;
++		};
++
++		macaddr_factory_8000: macaddr@8000 {
++			compatible = "mac-base";
++			reg = <0x8000 0x6>;
++			#nvmem-cell-cells = <1>;
++		};
++	};
++};
++
++&ubi_ubootenv {
++	nvmem-layout {
++		compatible = "u-boot,env-redundant-bool";
++	};
++};
++
++&ubi_ubootenv2 {
++	nvmem-layout {
++		compatible = "u-boot,env-redundant-bool";
++	};
++};
++
++&wan {
++	nvmem-cell-names = "mac-address";
++	nvmem-cells = <&macaddr_factory_8000 (1)>;
++};
++
++&wifi {
++	status = "okay";
++
++	#address-cells = <1>;
++	#size-cells = <0>;
++
++	nvmem-cells = <&eeprom_factory_0>;
++	nvmem-cell-names = "eeprom";
++
++	band@0 {
++		reg = <0>;
++
++		nvmem-cells = <&macaddr_factory_8000 (2)>;
++		nvmem-cell-names = "mac-address";
++	};
++
++	band@1 {
++		reg = <1>;
++
++		nvmem-cells = <&macaddr_factory_8000 (3)>;
++		nvmem-cell-names = "mac-address";
++	};
++};
+diff --git a/target/linux/mediatek/dts/mt7981b-qihoo-360t7.dts b/target/linux/mediatek/dts/mt7981b-qihoo-360t7.dts
+index 7986fd6d235..5ef9aa7ab07 100644
+--- a/target/linux/mediatek/dts/mt7981b-qihoo-360t7.dts
++++ b/target/linux/mediatek/dts/mt7981b-qihoo-360t7.dts
+@@ -1,237 +1,60 @@
+ // SPDX-License-Identifier: GPL-2.0-or-later OR MIT
+ 
+-/dts-v1/;
+-#include <dt-bindings/gpio/gpio.h>
+-#include <dt-bindings/input/input.h>
+-#include <dt-bindings/leds/common.h>
+-#include <dt-bindings/pinctrl/mt65xx.h>
+-
+-#include "mt7981b.dtsi"
++#include "mt7981b-qihoo-360t7-common.dtsi"
+ 
+ / {
+-	model = "Qihoo 360T7";
+ 	compatible = "qihoo,360t7", "mediatek,mt7981";
+-
+-	aliases {
+-		serial0 = &uart0;
+-		led-boot = &led_status_red;
+-		led-failsafe = &led_status_red;
+-		led-running = &led_status_green;
+-		led-upgrade = &led_status_green;
+-	};
+-
+-	chosen {
+-		bootargs-append = " root=/dev/fit0 rootwait";
+-		rootdisk = <&ubi_rootdisk>;
+-		stdout-path = "serial0:115200n8";
+-	};
+-
+-	memory@40000000 {
+-		reg = <0 0x40000000 0 0x10000000>;
+-		device_type = "memory";
+-	};
+-
+-	gpio-keys {
+-		compatible = "gpio-keys";
+-
+-		reset {
+-			label = "reset";
+-			linux,code = <KEY_RESTART>;
+-			gpios = <&pio 1 GPIO_ACTIVE_LOW>;
+-		};
+-
+-		wps {
+-			label = "wps";
+-			linux,code = <KEY_WPS_BUTTON>;
+-			gpios = <&pio 0 GPIO_ACTIVE_LOW>;
+-		};
+-	};
+-
+-	leds {
+-		compatible = "gpio-leds";
+-
+-		led_status_red: red {
+-			function = LED_FUNCTION_STATUS;
+-			color = <LED_COLOR_ID_RED>;
+-			gpios = <&pio 3 GPIO_ACTIVE_LOW>;
+-		};
+-
+-		led_status_green: green {
+-			function = LED_FUNCTION_STATUS;
+-			color = <LED_COLOR_ID_GREEN>;
+-			gpios = <&pio 7 GPIO_ACTIVE_LOW>;
+-		};
+-	};
++	model = "Qihoo 360T7";
+ };
+ 
+-&eth {
+-	status = "okay";
+-
+-	gmac0: mac@0 {
+-		compatible = "mediatek,eth-mac";
+-		reg = <0>;
+-		phy-mode = "2500base-x";
+-
+-		fixed-link {
+-			speed = <2500>;
+-			full-duplex;
+-			pause;
+-		};
++&partitions {
++	partition@100000 {
++		label = "u-boot-env";
++		reg = <0x100000 0x80000>;
++		read-only;
+ 	};
+-};
+ 
+-&mdio_bus {
+-	switch: switch@1f {
+-		compatible = "mediatek,mt7531";
+-		reg = <31>;
+-		reset-gpios = <&pio 39 GPIO_ACTIVE_HIGH>;
+-		interrupt-controller;
+-		#interrupt-cells = <1>;
+-		interrupt-parent = <&pio>;
+-		interrupts = <38 IRQ_TYPE_LEVEL_HIGH>;
++	factory: partition@180000 {
++		label = "Factory";
++		reg = <0x180000 0x200000>;
++		read-only;
+ 	};
+-};
+-
+-&spi0 {
+-	pinctrl-names = "default";
+-	pinctrl-0 = <&spi0_flash_pins>;
+-	status = "okay";
+-
+-	spi_nand@0 {
+-		compatible = "spi-nand";
+-		reg = <0>;
+-
+-		spi-max-frequency = <52000000>;
+-		spi-tx-bus-width = <4>;
+-		spi-rx-bus-width = <4>;
+-
+-		partitions {
+-			compatible = "fixed-partitions";
+-			#address-cells = <1>;
+-			#size-cells = <1>;
+-
+-			partition@0 {
+-				label = "bl2";
+-				reg = <0x0000000 0x0100000>;
+-				read-only;
+-			};
+-
+-			partition@100000 {
+-				label = "u-boot-env";
+-				reg = <0x0100000 0x0080000>;
+-			};
+ 
+-			factory: partition@180000 {
+-				label = "Factory";
+-				reg = <0x0180000 0x0200000>;
+-				read-only;
+-			};
+-
+-			partition@380000 {
+-				label = "fip";
+-				reg = <0x0380000 0x0200000>;
+-				read-only;
+-			};
+-
+-			partition@580000 {
+-				label = "ubi";
+-				reg = <0x0580000 0x6c00000>;
+-				compatible = "linux,ubi";
+-
+-				volumes {
+-					ubi_rootdisk: ubi-volume-fit {
+-						volname = "fit";
+-					};
+-				};
+-			};
+-
+-			partition@7180000 {
+-				label = "config";
+-				reg = <0x7180000 0x0100000>;
+-				read-only;
+-			};
+-
+-			partition@7280000 {
+-				label = "factory";
+-				reg = <0x7280000 0x0080000>;
+-				read-only;
+-			};
+-
+-			partition@7300000 {
+-				label = "log";
+-				reg = <0x7300000 0x0700000>;
+-				read-only;
+-			};
+-		};
++	partition@380000 {
++		label = "fip";
++		reg = <0x380000 0x200000>;
++		read-only;
+ 	};
+-};
+ 
+-&switch {
+-	ports {
+-		#address-cells = <1>;
+-		#size-cells = <0>;
+-
+-		port@0 {
+-			reg = <0>;
+-			label = "lan3";
+-		};
+-
+-		port@1 {
+-			reg = <1>;
+-			label = "lan2";
+-		};
++	partition@580000 {
++		compatible = "linux,ubi";
++		reg = <0x580000 0x6c00000>;
++		label = "ubi";
+ 
+-		port@2 {
+-			reg = <2>;
+-			label = "lan1";
+-		};
+-
+-		port@3 {
+-			reg = <3>;
+-			label = "wan";
+-		};
+-
+-		port@6 {
+-			reg = <6>;
+-			ethernet = <&gmac0>;
+-			phy-mode = "2500base-x";
+-
+-			fixed-link {
+-				speed = <2500>;
+-				full-duplex;
+-				pause;
++		volumes {
++			ubi_rootdisk: ubi-volume-fit {
++				volname = "fit";
+ 			};
+ 		};
+ 	};
+-};
+-
+-&pio {
+-	spi0_flash_pins: spi0-pins {
+-		mux {
+-			function = "spi";
+-			groups = "spi0", "spi0_wp_hold";
+-		};
+ 
+-		conf-pu {
+-			pins = "SPI0_CS", "SPI0_HOLD", "SPI0_WP";
+-			drive-strength = <MTK_DRIVE_8mA>;
+-			bias-disable; /* bias-disable */
+-		};
+-
+-		conf-pd {
+-			pins = "SPI0_CLK", "SPI0_MOSI", "SPI0_MISO";
+-			drive-strength = <MTK_DRIVE_8mA>;
+-			bias-disable; /* bias-disable */
+-		};
++	partition@7180000 {
++		label = "config";
++		reg = <0x7180000 0x100000>;
++		read-only;
+ 	};
+-};
+ 
+-&uart0 {
+-	status = "okay";
+-};
++	partition@7280000 {
++		label = "factory";
++		reg = <0x7280000 0x80000>;
++		read-only;
++	};
+ 
+-&watchdog {
+-	status = "okay";
++	partition@7300000 {
++		label = "log";
++		reg = <0x7300000 0x700000>;
++		read-only;
++	};
+ };
+ 
+ &wifi {
+diff --git a/target/linux/mediatek/filogic/base-files/etc/board.d/02_network b/target/linux/mediatek/filogic/base-files/etc/board.d/02_network
+index fe795469e67..24ee0fd2dce 100644
+--- a/target/linux/mediatek/filogic/base-files/etc/board.d/02_network
++++ b/target/linux/mediatek/filogic/base-files/etc/board.d/02_network
+@@ -60,6 +60,7 @@ mediatek_setup_interfaces()
+ 	keenetic,kn-3811|\
+ 	netis,nx32u|\
+ 	qihoo,360t7|\
++	qihoo,360t7-ubi|\
+ 	routerich,ax3000|\
+ 	routerich,ax3000-ubootmod|\
+ 	routerich,be7200|\
+diff --git a/target/linux/mediatek/filogic/base-files/lib/upgrade/platform.sh b/target/linux/mediatek/filogic/base-files/lib/upgrade/platform.sh
+index 6d7446b9fe1..3aac9131b1c 100644
+--- a/target/linux/mediatek/filogic/base-files/lib/upgrade/platform.sh
++++ b/target/linux/mediatek/filogic/base-files/lib/upgrade/platform.sh
+@@ -149,6 +149,7 @@ platform_do_upgrade() {
+ 	netcore,n60|\
+ 	netcore,n60-pro|\
+ 	qihoo,360t7|\
++	qihoo,360t7-ubi|\
+ 	routerich,ax3000-ubootmod|\
+ 	routerich,be7200|\
+ 	snr,snr-cpe-ax2|\
+@@ -349,6 +350,7 @@ platform_check_image() {
+ 	openwrt,one|\
+ 	netcore,n60|\
+ 	qihoo,360t7|\
++	qihoo,360t7-ubi|\
+ 	routerich,ax3000-ubootmod|\
+ 	tplink,tl-xdr4288|\
+ 	tplink,tl-xdr6086|\
+diff --git a/target/linux/mediatek/image/filogic.mk b/target/linux/mediatek/image/filogic.mk
+index 20c2502fb87..efbe0c51dd5 100644
+--- a/target/linux/mediatek/image/filogic.mk
++++ b/target/linux/mediatek/image/filogic.mk
+@@ -2769,10 +2769,8 @@ define Device/openwrt_one
+ endef
+ TARGET_DEVICES += openwrt_one
+ 
+-define Device/qihoo_360t7
++define Device/qihoo_360t7-common
+   DEVICE_VENDOR := Qihoo
+-  DEVICE_MODEL := 360T7
+-  DEVICE_DTS := mt7981b-qihoo-360t7
+   DEVICE_DTS_DIR := ../dts
+   UBINIZE_OPTS := -E 5
+   BLOCKSIZE := 128k
+@@ -2783,16 +2781,36 @@ define Device/qihoo_360t7
+   KERNEL_INITRAMFS_SUFFIX := -recovery.itb
+   KERNEL := kernel-bin | gzip
+   KERNEL_INITRAMFS := kernel-bin | lzma | \
+-	fit lzma $$(KDIR)/image-$$(firstword $$(DEVICE_DTS)).dtb with-initrd | pad-to 64k
++	fit lzma $$(KDIR)/image-$$(firstword $$(DEVICE_DTS)).dtb with-initrd | \
++	pad-to 64k
+   IMAGE/sysupgrade.itb := append-kernel | \
+-	fit gzip $$(KDIR)/image-$$(firstword $$(DEVICE_DTS)).dtb external-static-with-rootfs | append-metadata
++	fit gzip $$(KDIR)/image-$$(firstword $$(DEVICE_DTS)).dtb external-static-with-rootfs | \
++	append-metadata
+   DEVICE_PACKAGES := kmod-mt7915e kmod-mt7981-firmware mt7981-wo-firmware
+   ARTIFACTS := preloader.bin bl31-uboot.fip
+   ARTIFACT/preloader.bin := mt7981-bl2 spim-nand-ddr3
++endef
++
++define Device/qihoo_360t7
++	DEVICE_VENDOR := Qihoo
++  DEVICE_MODEL := 360T7
++  DEVICE_DTS := mt7981b-qihoo-360t7
++  DEVICE_DTS_DIR := ../dts
++  $(call Device/qihoo_360t7-common)
+   ARTIFACT/bl31-uboot.fip := mt7981-bl31-uboot qihoo_360t7
++  ARTIFACT/preloader.bin  := mt7981-bl2 spim-nand-ddr3-1866
+ endef
+ TARGET_DEVICES += qihoo_360t7
+ 
++define Device/qihoo_360t7-ubi
++  DEVICE_MODEL := 360T7 (UBI)
++  DEVICE_DTS := mt7981b-qihoo-360t7-ubi
++  $(call Device/qihoo_360t7-common)
++  ARTIFACT/bl31-uboot.fip := mt7981-bl31-uboot qihoo_360t7-ubi
++  ARTIFACT/preloader.bin  := mt7981-bl2 spim-nand-ubi-ddr3-1866
++endef
++TARGET_DEVICES += qihoo_360t7-ubi
++
+ define Device/routerich_ax3000
+   DEVICE_VENDOR := Routerich
+   DEVICE_MODEL := AX3000

@@ -1,0 +1,597 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Marco von Rosenberg <marcovr@selfnet.de>
+Date: Fri, 3 May 2024 22:59:11 +0200
+Subject: [PATCH 16/76] ipq40xx: add support for Huawei AP4050DN
+
+Hardware
+========
+SoC: Qualcomm IPQ4018
+ETH: Qualcomm QCA8075 (2 x RJ-45)
+WDG: OnSemi SCT706
+RAM: Micron MT41K128M16JT-125 (256MB)
+NOR: Infineon S25FL512S (64MB)
+
+Installation
+============
+
+1. Create a ramboot-able image with the command
+
+   { dd if=/dev/zero bs=32 count=1 2>/dev/null; \
+     cat openwrt-ipq40xx-generic-huawei_ap4050dn-initramfs-uImage.itb; \
+   } > ramboot.bin`
+
+2. Start a TFTP server in the folder with the ramboot.bin.
+
+3. Plug in a USB-RJ45 serial adapter to the CONSOLE port of the device
+   and start a serial console session with
+   9600 baud, no parity, 1 stop bit.
+
+4. Plug in either 12V power or PoE to the device.
+
+5. On the prompt `Press f or F  to stop Auto-Boot in 3 seconds`,
+   press `f` to enter the Huawei U-Boot command line
+
+6. Enter a new password for the u-boot command line
+
+7. In the command line, run these commands to ramboot OpenWrt:
+
+      setenv serverip <IPv4 address of TFTP server>
+      setenv ipaddr <IPv4 address for this AP>
+      setenv rambootfile ramboot.bin
+      run ramboot
+
+8. In OpenWrt, set up the network and then `scp` the files
+   `u-boot-huawei_ap4050dn/uImage` and
+   `openwrt-ipq40xx-generic-huawei_ap4050dn-squashfs-sysupgrade.bin`
+   into `/tmp/`
+
+9. To backup the original firmware, run the following:
+
+      cat /dev/mtd12 /dev/mtd13 > huawei_ap4050dn_fw_backup.bin.bin
+
+10. Run the following commands to flash u-boot and OpenWrt to the device:
+
+      mtd erase uboot
+      mtd write /tmp/uImage uboot
+      sysupgrade -n /tmp/openwrt-ipq40xx-generic-huawei_ap4050dn-squashfs-sysupgrade.bin
+
+11. The device should now boot OpenWrt! (sometimes the boot process takes a bit
+    longer due to the watchdog resetting the device before the watchdog driver runs)
+
+Signed-off-by: Marco von Rosenberg <marcovr@selfnet.de>
+---
+ package/firmware/ipq-wifi/Makefile            |   2 +
+ .../ipq40xx/base-files/etc/board.d/02_network |   1 +
+ .../etc/hotplug.d/firmware/11-ath10k-caldata  |   8 +
+ .../base-files/lib/upgrade/platform.sh        |  10 +
+ target/linux/ipq40xx/config-6.12              |   4 +
+ .../boot/dts/qcom/qcom-ipq4018-ap4050dn.dts   | 381 ++++++++++++++++++
+ target/linux/ipq40xx/image/generic.mk         |  12 +
+ 7 files changed, 418 insertions(+)
+ create mode 100644 target/linux/ipq40xx/files-6.12/arch/arm/boot/dts/qcom/qcom-ipq4018-ap4050dn.dts
+
+diff --git a/package/firmware/ipq-wifi/Makefile b/package/firmware/ipq-wifi/Makefile
+index 328448d08c8..af74989a245 100644
+--- a/package/firmware/ipq-wifi/Makefile
++++ b/package/firmware/ipq-wifi/Makefile
+@@ -45,6 +45,7 @@ ALLWIFIBOARDS:= \
+ 	glinet_gl-ax1800 \
+ 	glinet_gl-axt1800 \
+ 	glinet_gl-b3000 \
++	huawei_ap4050dn \
+ 	ignitenet_ss-w2-ac2600 \
+ 	iodata_wn-dax3000gr \
+ 	jdcloud_re-cs-02 \
+@@ -237,6 +238,7 @@ $(eval $(call generate-ipq-wifi-package,elecom_wrc-x3000gs2,ELECOM WRC-X3000GS2)
+ $(eval $(call generate-ipq-wifi-package,glinet_gl-ax1800,GL.iNet GL-AX1800))
+ $(eval $(call generate-ipq-wifi-package,glinet_gl-axt1800,GL.iNet GL-AXT1800))
+ $(eval $(call generate-ipq-wifi-package,glinet_gl-b3000,GL.iNet GL-B3000))
++$(eval $(call generate-ipq-wifi-package,huawei_ap4050dn,Huawei AP4050DN))
+ $(eval $(call generate-ipq-wifi-package,ignitenet_ss-w2-ac2600,Ignitenet SS-W2-AC2600))
+ $(eval $(call generate-ipq-wifi-package,iodata_wn-dax3000gr,I-O DATA WN-DAX3000GR))
+ $(eval $(call generate-ipq-wifi-package,jdcloud_re-cs-02,JDCloud RE-CS-02))
+diff --git a/target/linux/ipq40xx/base-files/etc/board.d/02_network b/target/linux/ipq40xx/base-files/etc/board.d/02_network
+index 6613f4fb417..a747dd90a8c 100644
+--- a/target/linux/ipq40xx/base-files/etc/board.d/02_network
++++ b/target/linux/ipq40xx/base-files/etc/board.d/02_network
+@@ -57,6 +57,7 @@ ipq40xx_setup_interfaces()
+ 	dlink,dap-2610|\
+ 	engenius,eap1300|\
+ 	extreme-networks,ws-ap3915i|\
++	huawei,ap4050dn|\
+ 	meraki,mr20|\
+ 	meraki,mr33|\
+ 	meraki,mr70|\
+diff --git a/target/linux/ipq40xx/base-files/etc/hotplug.d/firmware/11-ath10k-caldata b/target/linux/ipq40xx/base-files/etc/hotplug.d/firmware/11-ath10k-caldata
+index 921e0aa3a06..a9c630a1ebf 100644
+--- a/target/linux/ipq40xx/base-files/etc/hotplug.d/firmware/11-ath10k-caldata
++++ b/target/linux/ipq40xx/base-files/etc/hotplug.d/firmware/11-ath10k-caldata
+@@ -77,6 +77,10 @@ case "$FIRMWARE" in
+ 		caldata_extract "ART" 0x1000 0x2f20
+ 		ath10k_patch_mac $(mtd_get_mac_ascii CFG1 RADIOADDR0)
+ 		;;
++	huawei,ap4050dn)
++		caldata_extract "0:ART" 0x1000 0x2f20
++		ath10k_patch_mac $(macaddr_add "$(cat /sys/class/net/eth0/address)" 1)
++		;;
+ 	mikrotik,cap-ac|\
+ 	mikrotik,hap-ac2|\
+ 	mikrotik,hap-ac3|\
+@@ -159,6 +163,10 @@ case "$FIRMWARE" in
+ 		caldata_extract "ART" 0x5000 0x2f20
+ 		ath10k_patch_mac $(mtd_get_mac_ascii CFG1 RADIOADDR1)
+ 		;;
++	huawei,ap4050dn)
++		caldata_extract "0:ART" 0x5000 0x2f20
++		ath10k_patch_mac $(macaddr_add "$(cat /sys/class/net/eth0/address)" 2)
++		;;
+ 	mikrotik,cap-ac|\
+ 	mikrotik,hap-ac2|\
+ 	mikrotik,hap-ac3|\
+diff --git a/target/linux/ipq40xx/base-files/lib/upgrade/platform.sh b/target/linux/ipq40xx/base-files/lib/upgrade/platform.sh
+index 6b5d14b234d..4b50575d695 100644
+--- a/target/linux/ipq40xx/base-files/lib/upgrade/platform.sh
++++ b/target/linux/ipq40xx/base-files/lib/upgrade/platform.sh
+@@ -167,6 +167,16 @@ platform_do_upgrade() {
+ 		CI_ROOTPART="rootfs"
+ 		emmc_do_upgrade "$1"
+ 		;;
++	huawei,ap4050dn)
++		# Store beginning address of the "uboot" partition
++		# as KernelA address and KernelB address, each to ResultA & ResultB
++		# This is the address from which the bootloader will try to load the u-boot that we use as loader.
++		HUAWEI_AP4050DN_LOADADDR="\x00\x00\x70\x00\x00\x00\x70\x00"
++		echo -n -e $HUAWEI_AP4050DN_LOADADDR | dd of=$(find_mtd_part ResultA) bs=1 seek=$((0x4264)) conv=notrunc
++		echo -n -e $HUAWEI_AP4050DN_LOADADDR | dd of=$(find_mtd_part ResultA) bs=1 seek=$((0x40264)) conv=notrunc
++		echo -n -e $HUAWEI_AP4050DN_LOADADDR | dd of=$(find_mtd_part ResultB) bs=1 seek=$((0x4264)) conv=notrunc
++		default_do_upgrade "$1"
++		;;
+ 	linksys,ea6350v3|\
+ 	linksys,ea8300|\
+ 	linksys,mr6350|\
+diff --git a/target/linux/ipq40xx/config-6.12 b/target/linux/ipq40xx/config-6.12
+index aca3af0f504..3cc96e126d6 100644
+--- a/target/linux/ipq40xx/config-6.12
++++ b/target/linux/ipq40xx/config-6.12
+@@ -309,6 +309,7 @@ CONFIG_MTD_SPI_NOR=y
+ CONFIG_MTD_SPLIT_FIRMWARE=y
+ CONFIG_MTD_SPLIT_FIT_FW=y
+ CONFIG_MTD_SPLIT_WRGG_FW=y
++CONFIG_MTD_VIRT_CONCAT=y
+ CONFIG_MUTEX_SPIN_ON_OWNER=y
+ CONFIG_NEED_DMA_MAP_STATE=y
+ CONFIG_NEED_SRCU_NMI_SAFE=y
+@@ -323,6 +324,7 @@ CONFIG_NET_FLOW_LIMIT=y
+ CONFIG_NET_INGRESS=y
+ CONFIG_NET_PTP_CLASSIFY=y
+ CONFIG_NET_SELFTESTS=y
++CONFIG_NET_SWITCHDEV=y
+ CONFIG_NET_XGRESS=y
+ CONFIG_NLS=y
+ CONFIG_NO_HZ=y
+@@ -354,6 +356,7 @@ CONFIG_PAGE_OFFSET=0xC0000000
+ CONFIG_PAGE_POOL=y
+ CONFIG_PAGE_SIZE_LESS_THAN_256KB=y
+ CONFIG_PAGE_SIZE_LESS_THAN_64KB=y
++CONFIG_PAHOLE_HAS_LANG_EXCLUDE=y
+ CONFIG_PCI=y
+ CONFIG_PCIEAER=y
+ CONFIG_PCIEPORTBUS=y
+@@ -484,6 +487,7 @@ CONFIG_SGL_ALLOC=y
+ CONFIG_SKB_EXTENSIONS=y
+ CONFIG_SMP=y
+ CONFIG_SMP_ON_UP=y
++# CONFIG_SM_GCC_7150 is not set
+ CONFIG_SOCK_RX_QUEUE_MAPPING=y
+ CONFIG_SOFTIRQ_ON_OWN_STACK=y
+ CONFIG_SPARSE_IRQ=y
+diff --git a/target/linux/ipq40xx/files-6.12/arch/arm/boot/dts/qcom/qcom-ipq4018-ap4050dn.dts b/target/linux/ipq40xx/files-6.12/arch/arm/boot/dts/qcom/qcom-ipq4018-ap4050dn.dts
+new file mode 100644
+index 00000000000..bdab85e2c14
+--- /dev/null
++++ b/target/linux/ipq40xx/files-6.12/arch/arm/boot/dts/qcom/qcom-ipq4018-ap4050dn.dts
+@@ -0,0 +1,381 @@
++// SPDX-License-Identifier: GPL-2.0-or-later OR MIT
++
++#include "qcom-ipq4019.dtsi"
++#include <dt-bindings/gpio/gpio.h>
++#include <dt-bindings/input/input.h>
++#include <dt-bindings/leds/common.h>
++#include <dt-bindings/soc/qcom,tcsr.h>
++
++/ {
++	model = "Huawei AP4050DN";
++	compatible = "huawei,ap4050dn", "qcom,ipq40xx";
++
++	chosen {
++		bootargs = "console=ttyMSM0,9600n8";
++	};
++
++	aliases {
++		ethernet0 = &gmac;
++		led-boot = &led_function_green;
++		led-failsafe = &led_function_red;
++		led-running = &led_function_green;
++		led-upgrade = &led_function_red;
++		label-mac-device = &gmac;
++	};
++
++	soc {
++		rng@22000 {
++			status = "okay";
++		};
++
++		counter@4a1000 {
++			compatible = "qcom,qca-gcnt";
++			reg = <0x4a1000 0x4>;
++		};
++
++		tcsr@1949000 {
++			compatible = "qcom,tcsr";
++			reg = <0x1949000 0x100>;
++			qcom,wifi_glb_cfg = <TCSR_WIFI_GLB_CFG>;
++		};
++
++		ess_tcsr@1953000 {
++			compatible = "qcom,tcsr";
++			reg = <0x1953000 0x1000>;
++			qcom,ess-interface-select = <TCSR_ESS_PSGMII>;
++		};
++
++		tcsr@1957000 {
++			compatible = "qcom,tcsr";
++			reg = <0x1957000 0x100>;
++			qcom,wifi_noc_memtype_m0_m2 = <TCSR_WIFI_NOC_MEMTYPE_M0_M2>;
++		};
++
++		crypto@8e3a000 {
++			status = "okay";
++		};
++
++		watchdog@b017000 {
++			status = "okay";
++		};
++	};
++
++	keys {
++		compatible = "gpio-keys";
++
++		restart {
++			label = "reset";
++			linux,code = <KEY_RESTART>;
++			gpios = <&tlmm 63 GPIO_ACTIVE_LOW>;
++			debounce-interval = <60>;
++		};
++	};
++
++	leds {
++		compatible = "gpio-leds";
++
++		led_function_green: led-status-green {
++			function = LED_FUNCTION_STATUS;
++			color = <LED_COLOR_ID_GREEN>;
++			gpios = <&tlmm 0 GPIO_ACTIVE_HIGH>;
++		};
++
++		led_function_red: led-status-red {
++			function = LED_FUNCTION_STATUS;
++			color = <LED_COLOR_ID_RED>;
++			gpios = <&tlmm 4 GPIO_ACTIVE_LOW>;
++		};
++	};
++
++	watchdog {
++		compatible = "linux,wdt-gpio";
++		gpios = <&tlmm 3 GPIO_ACTIVE_LOW>;
++		hw_algo = "toggle";
++		hw_margin_ms = <2>;
++		always-running;
++	};
++
++	virtual_flash {
++		compatible = "mtd-concat";
++		devices = <&fwconcat0 &fwconcat1>;
++
++		partitions {
++			compatible = "fixed-partitions";
++			#address-cells = <1>;
++			#size-cells = <1>;
++
++			partition@0 {
++				label = "firmware";
++				reg = <0x0 0x3200000>;
++				compatible = "denx,fit";
++			};
++		};
++	};
++};
++
++&tlmm {
++	serial_pins: serial_pinmux {
++		mux {
++			pins = "gpio60", "gpio61";
++			function = "blsp_uart0";
++			bias-disable;
++		};
++	};
++
++	spi_0_pins: spi_0_pinmux {
++		pin {
++			function = "blsp_spi0";
++			pins = "gpio55", "gpio56", "gpio57";
++			drive-strength = <12>;
++			bias-disable;
++		};
++		pin_cs {
++			function = "gpio";
++			pins = "gpio54";
++			drive-strength = <2>;
++			bias-disable;
++			output-high;
++		};
++	};
++};
++
++&blsp_dma {
++	status = "okay";
++};
++
++&blsp1_spi1 {
++	pinctrl-0 = <&spi_0_pins>;
++	pinctrl-names = "default";
++	status = "okay";
++	cs-gpios = <&tlmm 54 GPIO_ACTIVE_HIGH>;
++
++	flash@0 {
++		#address-cells = <1>;
++		#size-cells = <1>;
++		compatible = "jedec,spi-nor";
++		reg = <0>;
++		spi-max-frequency = <24000000>;
++
++		partitions {
++			compatible = "fixed-partitions";
++			#address-cells = <1>;
++			#size-cells = <1>;
++
++			partition-flash-all@0 {
++				label = "flash-all";
++				reg = <0x00000000 0x4000000>;
++				read-only;
++			};
++
++			partition@0 {
++				label = "0:SBL1";
++				reg = <0x00 0x40000>;
++				read-only;
++			};
++
++			partition@40000 {
++				label = "0:MIBIB";
++				reg = <0x40000 0x40000>;
++				read-only;
++			};
++
++			partition@80000 {
++				label = "0:QSEE";
++				reg = <0x80000 0x80000>;
++				read-only;
++			};
++
++			partition@100000 {
++				label = "0:CDT";
++				reg = <0x100000 0x40000>;
++				read-only;
++			};
++
++			partition@140000 {
++				label = "0:DDRPARAMS";
++				reg = <0x140000 0x40000>;
++				read-only;
++			};
++
++			partition@180000 {
++				label = "0:APPSBL";
++				reg = <0x180000 0x100000>;
++				read-only;
++			};
++
++			partition@280000 {
++				label = "0:ART";
++				reg = <0x280000 0x40000>;
++				read-only;
++
++				nvmem-layout {
++					compatible = "fixed-layout";
++					#address-cells = <1>;
++					#size-cells = <1>;
++
++					precal_art_1000: precal@1000 {
++						reg = <0x1000 0x2f20>;
++					};
++
++					precal_art_5000: precal@5000 {
++						reg = <0x5000 0x2f20>;
++					};
++
++					precal_art_9000: precal@9000 {
++						reg = <0x9000 0x2f20>;
++					};
++				};
++			};
++
++			partition@2c0000 {
++				label = "0:APPSBLENV";
++				reg = <0x2c0000 0x40000>;
++				read-only;
++			};
++
++			partition@300000 {
++				label = "ResultA";
++				reg = <0x300000 0x80000>;
++
++				nvmem-layout {
++					compatible = "fixed-layout";
++					#address-cells = <1>;
++					#size-cells = <1>;
++
++					macaddr_resulta_10190: macaddr@10190 {
++						reg = <0x10190 0x6>;
++					};
++				};
++			};
++
++			partition@380000 {
++				label = "configA";
++				reg = <0x380000 0x280000>;
++				read-only;
++			};
++
++			partition@600000 {
++				label = "bootimageA";
++				reg = <0x600000 0x100000>;
++				read-only;
++			};
++
++			// In the vendor layout, the partition "SysImageA" lies here
++			// which encompassed the space of "uboot" and "fwconcat0"
++			partition@700000 {
++				label = "uboot";
++				reg = <0x700000 0x80000>;
++			};
++
++			fwconcat0: partition@780000 {
++				label = "fwconcat0";
++				reg = <0x780000 0x1880000>;
++			};
++
++			partition@2000000 {
++				label = "1:SBL1";
++				reg = <0x2000000 0x40000>;
++				read-only;
++			};
++
++			partition@2040000 {
++				label = "1:MIBIB";
++				reg = <0x2040000 0x40000>;
++				read-only;
++			};
++
++			partition@2080000 {
++				label = "1:QSEE";
++				reg = <0x2080000 0x80000>;
++				read-only;
++			};
++
++			partition@2100000 {
++				label = "1:CDT";
++				reg = <0x2100000 0x40000>;
++				read-only;
++			};
++
++			partition@2140000 {
++				label = "1:DDRPARAMS";
++				reg = <0x2140000 0x40000>;
++				read-only;
++			};
++
++			partition@2180000 {
++				label = "1:APPSBL";
++				reg = <0x2180000 0x100000>;
++				read-only;
++			};
++
++			partition@2280000 {
++				label = "Reservel";
++				reg = <0x2280000 0x80000>;
++				read-only;
++			};
++
++			partition@2300000 {
++				label = "ResultB";
++				reg = <0x2300000 0x80000>;
++			};
++
++			partition@2380000 {
++				label = "configB";
++				reg = <0x2380000 0x280000>;
++				read-only;
++			};
++
++			partition@2600000 {
++				label = "bootimageB";
++				reg = <0x2600000 0x100000>;
++				read-only;
++			};
++
++			// In the vendor layout, the partition "SysImageB" lies here
++			fwconcat1: partition@2700000 {
++				label = "fwconcat1";
++				reg = <0x2700000 0x1900000>;
++			};
++		};
++	};
++};
++
++&blsp1_uart1 {
++	pinctrl-0 = <&serial_pins>;
++	pinctrl-names = "default";
++	status = "okay";
++};
++
++&wifi0 {
++	status = "okay";
++	qcom,ath10k-calibration-variant = "huawei-ap4050dn";
++};
++
++&wifi1 {
++	status = "okay";
++	qcom,ath10k-calibration-variant = "huawei-ap4050dn";
++};
++
++&cryptobam {
++	status = "okay";
++};
++
++&mdio {
++	status = "okay";
++};
++
++&gmac {
++	status = "okay";
++
++	nvmem-cells = <&macaddr_resulta_10190 0>;
++	nvmem-cell-names = "mac-address";
++};
++
++&switch {
++	status = "okay";
++};
++
++&swport4 {
++	status = "okay";
++	label = "lan";
++};
+diff --git a/target/linux/ipq40xx/image/generic.mk b/target/linux/ipq40xx/image/generic.mk
+index 5342583cfce..4feed6baf13 100644
+--- a/target/linux/ipq40xx/image/generic.mk
++++ b/target/linux/ipq40xx/image/generic.mk
+@@ -644,6 +644,18 @@ define Device/glinet_gl-s1300
+ endef
+ TARGET_DEVICES += glinet_gl-s1300
+ 
++define Device/huawei_ap4050dn
++	$(call Device/FitImageLzma)
++	DEVICE_VENDOR := Huawei
++	DEVICE_MODEL := AP4050DN
++	SOC := qcom-ipq4018
++	IMAGE_SIZE := 51200k
++	DEVICE_PACKAGES := ipq-wifi-huawei_ap4050dn
++	KERNEL = kernel-bin | lzma | fit lzma $$(KDIR)/image-$$(DEVICE_DTS).dtb
++	IMAGE/sysupgrade.bin := append-kernel | append-rootfs | pad-rootfs | check-size | append-metadata
++endef
++TARGET_DEVICES += huawei_ap4050dn
++
+ define Device/kernel-size-6350-8300
+ 	DEVICE_COMPAT_VERSION := 2.0
+ 	DEVICE_COMPAT_MESSAGE := Kernel partition size must be increased for \

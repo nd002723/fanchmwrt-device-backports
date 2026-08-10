@@ -1,0 +1,372 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Kamil=20Jo=C5=84ca?= <kjonca@onet.pl>
+Date: Tue, 6 Jan 2026 09:03:33 +0100
+Subject: [PATCH 07/76] ramips: mt76x8: add support for Cudy LT400E v1
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+This commit adds support for the Cudy LT400E v1,
+an indoor 4G/LTE WiFi router.
+It has 4x10/100 Mbps Ethernet ports, a 2.4 GHz radio,
+and a Quectel 4G/LTE EC200A modem.
+
+Hardware:
+
+SoC: MediaTek MT7628NN
+Flash: 8 MiB SPI
+RAM: 64 MiB
+Ethernet: 4x10/100 Mbps
+WiFi: 2.4 GHz (embedded MT7628, 802.11n)
+WWAN: Quectel EC200A-EL 4G/LTE Cat 4 modem
+SIM: nano-SIM slot
+Buttons: 1 Reset button, 1 WPS button
+LEDs: 10x (blue)
+Power: 12 V DC barrel jack
+
+Installation:
+The stock firmware is a customized variant of OpenWrt, which implements
+a signature check that only allows flashing official firmware. Cudy
+offers, on their website [1][6], intermediate OpenWrt firmware images
+which do not implement the signature check. After flashing the
+intermediate image, the upstream (i.e., official) OpenWrt image can be
+installed.  See the device's entry in OpenWrt's Wiki for more details [2].
+
+Cellular network:
+The Quectel EC200A modem is internally connected to the SoC via USB, and
+operates in ECM mode, supported by the CDC Ether driver [3]. When
+inserting a SIM card in the slot, if no PIN is needed, the network
+interface "usb0" is brought up and the cellular connection works out of
+the box. To interact with the modem directly (unlock the PIN, change APN
+and PDP settings, etc.), AT commands can be sent with picocom to serial
+port /dev/ttyUSB2 [4].
+
+Recovery:
+The stock firmware can be recovered via TFTP, as the bootloader (based
+on U-Boot) implements a recovery client. Set up a TFTP server on your
+computer with IP 192.168.88.1/24 serving the stock firmware from Cudy's
+website renamed to "recovery.bin". Press the Reset button (keep it
+pressed), power on the device, wait for the TFTP server to send the
+recovery.bin file, then release the Reset button. The router will take a
+couple of minutes to reboot and set up the stock firmware. See the
+device's entry in OpenWrt's Wiki for more details [2].
+
+Discussion:
+Use the dedicated thread in OpenWrt's forum to discuss any aspects [5].
+
+Acknowledgments:
+The code to support this device is largely based on the sources kindly
+provided by Cudy in compliance with the GPL license. Thanks for
+supporting the OpenWrt community.
+
+Links:
+[1] https://www.cudy.com/blogs/faq/openwrt-software-download
+[2] https://openwrt.org/toh/cudy/lt400e_v1
+[3] https://openwrt.org/docs/guide-user/network/wan/wwan/ethernetoverusb_cdc
+[4] https://openwrt.org/docs/guide-user/network/wan/wwan/at_commands
+[5] https://forum.openwrt.org/t/242466
+[6] https://drive.google.com/drive/folders/1BKVarlwlNxf7uJUtRhuMGUqeCa5KpMnj
+
+Co-authored-by: rogerpueyo <roger.pueyo@guifi.net>
+
+Signed-off-by: Kamil Jońca <kjonca@onet.pl>
+Link: https://github.com/openwrt/openwrt/pull/21246
+Signed-off-by: Hauke Mehrtens <hauke@hauke-m.de>
+---
+ .../ramips/dts/mt7628an_cudy_lt400e-v1.dts    | 225 ++++++++++++++++++
+ target/linux/ramips/image/mt76x8.mk           |  11 +
+ .../mt76x8/base-files/etc/board.d/01_leds     |   8 +
+ .../mt76x8/base-files/etc/board.d/02_network  |   7 +
+ 4 files changed, 251 insertions(+)
+ create mode 100644 target/linux/ramips/dts/mt7628an_cudy_lt400e-v1.dts
+
+diff --git a/target/linux/ramips/dts/mt7628an_cudy_lt400e-v1.dts b/target/linux/ramips/dts/mt7628an_cudy_lt400e-v1.dts
+new file mode 100644
+index 00000000000..5ced75c65ce
+--- /dev/null
++++ b/target/linux/ramips/dts/mt7628an_cudy_lt400e-v1.dts
+@@ -0,0 +1,225 @@
++// SPDX-License-Identifier: GPL-2.0-or-later OR MIT
++
++#include "mt7628an.dtsi"
++
++#include <dt-bindings/gpio/gpio.h>
++#include <dt-bindings/input/input.h>
++#include <dt-bindings/leds/common.h>
++
++/ {
++	compatible = "cudy,lt400e-v1", "mediatek,mt7628an-soc";
++	model = "Cudy LT400E v1";
++
++	aliases {
++		led-boot = &led_power;
++		led-running = &led_power;
++		led-failsafe = &led_power;
++		led-upgrade = &led_power;
++		label-mac-device = &ethernet;
++	};
++
++	chosen {
++		bootargs = "console=ttyS0,115200";
++	};
++
++	leds {
++		compatible = "gpio-leds";
++
++		led_power: power {
++			function = LED_FUNCTION_POWER;
++			color = <LED_COLOR_ID_BLUE>;
++			gpios = <&gpio 37 GPIO_ACTIVE_LOW>;
++		};
++
++		internet {
++			function = LED_FUNCTION_MOBILE;
++			color = <LED_COLOR_ID_BLUE>;
++			gpios = <&gpio 39 GPIO_ACTIVE_LOW>;
++		};
++
++		wifi {
++			function = LED_FUNCTION_WLAN;
++			color = <LED_COLOR_ID_BLUE>;
++			gpios = <&gpio 41 GPIO_ACTIVE_LOW>;
++		};
++
++		lan1 {
++			function = LED_FUNCTION_LAN;
++			color = <LED_COLOR_ID_BLUE>;
++			function-enumerator = <1>;
++			gpios = <&gpio 42 GPIO_ACTIVE_LOW>;
++		};
++
++		lan2 {
++			function = LED_FUNCTION_LAN;
++			color = <LED_COLOR_ID_BLUE>;
++			function-enumerator = <2>;
++			gpios = <&gpio 43 GPIO_ACTIVE_LOW>;
++		};
++
++		lan3 {
++			function = LED_FUNCTION_LAN;
++			color = <LED_COLOR_ID_BLUE>;
++			function-enumerator = <3>;
++			gpios = <&gpio 44 GPIO_ACTIVE_LOW>;
++		};
++
++		lan4 {
++			function = LED_FUNCTION_LAN;
++			color = <LED_COLOR_ID_BLUE>;
++			function-enumerator = <4>;
++			gpios = <&gpio 45 GPIO_ACTIVE_LOW>;
++		};
++
++		signal1 {
++			label = "blue:signal1";
++			gpios = <&gpio 46 GPIO_ACTIVE_LOW>;
++		};
++
++		signal2 {
++			label = "blue:signal2";
++			gpios = <&gpio 2 GPIO_ACTIVE_LOW>;
++		};
++
++		led-signal3 {
++			label = "blue:signal3";
++			gpios = <&gpio 0 GPIO_ACTIVE_LOW>;
++		};
++	};
++
++	gpio-export {
++		compatible = "gpio-export";
++
++		usb4g {
++			gpio-export,name = "4g";
++			gpio-export,output = <0>;
++			gpios = <&gpio 3 GPIO_ACTIVE_HIGH>;
++		};
++	};
++
++	gpio-keys {
++		compatible = "gpio-keys";
++
++		reset {
++			label = "reset";
++			linux,code = <KEY_RESTART>;
++			gpios = <&gpio 11 GPIO_ACTIVE_LOW>;
++		};
++
++		wps {
++			label = "wps";
++			gpios = <&gpio 5 GPIO_ACTIVE_LOW>;
++			linux,code = <KEY_WPS_BUTTON>;
++		};
++	};
++};
++
++
++&state_default {
++	gpio {
++		groups = "i2c", "gpio", "wdt", "p0led_an", "wled_an";
++		function = "gpio";
++	};
++};
++
++&pcie0 {
++	wifi@0,0 {
++		compatible = "mediatek,mt76";
++		reg = <0x0000 0 0 0 0>;
++		nvmem-cells = <&eeprom_factory_8000>, <&macaddr_bdinfo_de00 2>;
++		nvmem-cell-names = "eeprom", "mac-address";
++		ieee80211-freq-limit = <5000000 6000000>;
++	};
++};
++
++&wmac {
++	status = "okay";
++
++	nvmem-cells = <&eeprom_factory_0>, <&macaddr_bdinfo_de00 0>;
++	nvmem-cell-names = "eeprom", "mac-address";
++};
++
++&ethernet {
++	nvmem-cells = <&macaddr_bdinfo_de00 0>;
++	nvmem-cell-names = "mac-address";
++};
++
++&ehci {
++	status = "okay";
++};
++
++&ohci {
++	status = "okay";
++};
++
++&spi0 {
++	status = "okay";
++
++	flash@0 {
++		compatible = "jedec,spi-nor";
++		reg = <0>;
++		spi-max-frequency = <40000000>;
++
++		partitions {
++			compatible = "fixed-partitions";
++			#address-cells = <1>;
++			#size-cells = <1>;
++
++			partition@0 {
++				label = "u-boot";
++				reg = <0x0 0x30000>;
++				read-only;
++			};
++
++			partition@30000 {
++				label = "u-boot-env";
++				reg = <0x30000 0x10000>;
++				read-only;
++			};
++
++			partition@40000 {
++				label = "factory";
++				reg = <0x40000 0x10000>;
++				read-only;
++
++				nvmem-layout {
++					compatible = "fixed-layout";
++					#address-cells = <1>;
++					#size-cells = <1>;
++
++					eeprom_factory_0: eeprom@0 {
++						reg = <0x0 0x400>;
++					};
++
++					eeprom_factory_8000: eeprom@8000 {
++						reg = <0x8000 0x4da8>;
++					};
++				};
++			};
++
++			partition@50000 {
++				compatible = "denx,uimage";
++				label = "firmware";
++				reg = <0x50000 0x7a0000>;
++			};
++
++			partition@ff0000 {
++				label = "bdinfo";
++				reg = <0x7f0000 0x10000>;
++				read-only;
++
++				nvmem-layout {
++					compatible = "fixed-layout";
++					#address-cells = <1>;
++					#size-cells = <1>;
++
++					macaddr_bdinfo_de00: macaddr@de00 {
++						compatible = "mac-base";
++						reg = <0xde00 0x6>;
++						#nvmem-cell-cells = <1>;
++					};
++				};
++			};
++		};
++	};
++};
+diff --git a/target/linux/ramips/image/mt76x8.mk b/target/linux/ramips/image/mt76x8.mk
+index 8c85e090cbc..7e6577f1ca0 100644
+--- a/target/linux/ramips/image/mt76x8.mk
++++ b/target/linux/ramips/image/mt76x8.mk
+@@ -210,6 +210,17 @@ define Device/cudy_lt300-v3
+ endef
+ TARGET_DEVICES += cudy_lt300-v3
+ 
++define Device/cudy_lt400e-v1
++  IMAGE_SIZE := 7808k
++  DEVICE_VENDOR := Cudy
++  DEVICE_MODEL := LT400E
++  DEVICE_VARIANT := v1
++  DEVICE_PACKAGES := kmod-usb2 kmod-usb-ohci kmod-usb-net-cdc-ether \
++  kmod-usb-serial-option
++  SUPPORTED_DEVICES += cudy,lt400e
++endef
++TARGET_DEVICES += cudy_lt400e-v1
++
+ define Device/cudy_m1200-v1
+   IMAGE_SIZE := 15872k
+   DEVICE_VENDOR := Cudy
+diff --git a/target/linux/ramips/mt76x8/base-files/etc/board.d/01_leds b/target/linux/ramips/mt76x8/base-files/etc/board.d/01_leds
+index faee46c06e4..3a48dbdbdb2 100644
+--- a/target/linux/ramips/mt76x8/base-files/etc/board.d/01_leds
++++ b/target/linux/ramips/mt76x8/base-files/etc/board.d/01_leds
+@@ -30,6 +30,14 @@ creality,wb-01)
+ cudy,lt300-v3)
+ 	ucidef_set_led_netdev "internet" "internet" "white:status" "usb0"
+ 	;;
++cudy,lt400e-v1)
++	ucidef_set_led_switch "lan1" "lan1" "blue:lan-1" "switch0" "0x08"
++	ucidef_set_led_switch "lan2" "lan2" "blue:lan-2" "switch0" "0x04"
++	ucidef_set_led_switch "lan3" "lan3" "blue:lan-3" "switch0" "0x02"
++	ucidef_set_led_switch "lan4" "lan4" "blue:lan-4" "switch0" "0x01"
++	ucidef_set_led_netdev "wifi" "wifi" "blue:wlan" "phy0-ap0"
++	ucidef_set_led_netdev "internet" "internet" "blue:internet" "usb0"
++	;;
+ cudy,wr1000)
+ 	ucidef_set_led_switch "wan" "wan" "blue:wan" "switch0" "0x10"
+ 	ucidef_set_led_switch "lan1" "lan1" "blue:lan1" "switch0" "0x08"
+diff --git a/target/linux/ramips/mt76x8/base-files/etc/board.d/02_network b/target/linux/ramips/mt76x8/base-files/etc/board.d/02_network
+index d374f789baf..56217518bc9 100644
+--- a/target/linux/ramips/mt76x8/base-files/etc/board.d/02_network
++++ b/target/linux/ramips/mt76x8/base-files/etc/board.d/02_network
+@@ -106,6 +106,13 @@ ramips_setup_interfaces()
+ 		uci add_list firewall.@zone[1].network='wwan'
+ 		uci add_list firewall.@zone[1].network='wwan6'
+ 		;;
++	cudy,lt400e-v1)
++		ucidef_add_switch "switch0" \
++			"3:lan:1" "2:lan:2" "1:lan:3" "0:lan:4" "6@eth0"
++		ucidef_set_interface "wwan" device "usb0" protocol "dhcp"
++		uci add_list firewall.@zone[1].network='wwan'
++		uci add_list firewall.@zone[1].network='wwan6'
++		;;
+ 	cudy,m1200-v1|\
+ 	cudy,tr1200-v1)
+ 		ucidef_add_switch "switch0" \

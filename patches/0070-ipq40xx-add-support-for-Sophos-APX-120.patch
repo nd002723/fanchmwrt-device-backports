@@ -1,0 +1,536 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Morice Olbert <synapse7062@spnkr.de>
+Date: Tue, 28 Jul 2026 12:30:04 +0200
+Subject: [PATCH 70/76] ipq40xx: add support for Sophos APX 120
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Specifications
+--------------
+- SoC       : Qualcomm IPQ4019 (4x ARMv7 Cortex-A7 @ 716 MHz, NEON/VFPv4)
+- RAM       : 256 MiB DDR3
+- SPI-NOR   : Macronix MX25L1606E (2 MiB) - bootloader + ART calibration
+- SPI-NAND  : Winbond W25M02GV (256 MiB, dual-die) - kernel + rootfs (UBI)
+- WLAN      : IPQ4019 on-chip, 2 radios
+  - 2.4 GHz : 2x2 802.11b/g/n (wifi0)
+  - 5 GHz   : 2x2 802.11n/ac (wifi1)
+- Ethernet  : 1x RJ45 via QCA8075 PHY, jack wired to switch port 5
+- TPM       : Atmel AT97SC3204T on i2c @ 0x29
+- Buttons   : 1x Reset (gpio2, active low)
+- LEDs      : green (gpio3, power), red (gpio4, status / panic)
+- UART      : 115200 8N1 3.3V (gpio60 TX / gpio61 RX)
+- Power     : DC 12V
+
+MAC addresses
+-------------
+Read from the ART partition on SPI-NOR flash at offset 0x0,
+encoded as a nvmem cell in the DTS.
+
+Flash layout
+------------
+SPI-NOR (2 MiB) carries the QCA bootloader chain and ART:
+
+  SBL1       0x000000  256 KiB  (bootloader stage 1)
+  MIBIB      0x040000  128 KiB  (flash partition table)
+  QSEE       0x060000  384 KiB  (TrustZone / secure env)
+  CDT        0x0c0000   64 KiB  (configuration data tbl)
+  DDRPARAMS  0x0d0000   64 KiB  (DDR training parameters)
+  APPSBLENV  0x0e0000   64 KiB  (U-Boot environment)
+  APPSBL     0x0f0000  512 KiB  (U-Boot)
+  ART        0x170000   64 KiB  (WiFi calibration + MAC)
+
+The W25M02GV SPI-NAND is split at the die boundary
+(die 0 = rootfs, die 1 = data) to work around a stock U-Boot bug:
+the die-select is broken, causing reads from die 1 to return
+0xFF. If UBI wear-leveling relocated the layout volume to
+die 1, U-Boot would fail to attach UBI, bricking boot.
+Splitting the chip keeps all UBI metadata U-Boot reads from
+die 0.
+
+Stock U-Boot hardcodes the UBI attach window to 64 MiB;
+the bootcmd replacement expands it to 128 MiB to use the
+full die 0.
+
+  rootfs  0x00000000  128 MiB
+  data    0x08000000  128 MiB
+
+Installation
+------------
+1. Build image for sophos_apx120 target
+2. Start TFTP server in folder with
+   openwrt-ipq40xx-generic-sophos_apx120-initramfs-
+   uImage.itb
+3. Plug in Serial TTL Adapter (115200 baud):
+
+| APX 120 | VCC  | RX  | GND | TX  |
+|--------|------|-----|-----|-----|
+| USB    | X    | TX  | GND | RX  |
+|--------|------|-----|-----|-----|
+
+3. Short U26 pin 8 (first pin on left, top row on NAND
+   Chip, with ethernet port facing you) to ground for a
+   fraction of a second during power-on. Expected output shows
+   NAND detection and CRC warning, then U-Boot prompt.
+4. In U-Boot run:
+   $ setenv bootdelay 5
+   $ setenv verify no
+   $ saveenv
+   $ tftpboot 0x84000000
+   openwrt-ipq40xx-generic-sophos_apx120-initramfs-uImage.itb
+   $ bootm 0x84000000
+5. Setup Networking Transfer the sysupgrade image using a
+   HTTP server or scp
+6. In OpenWrt run:
+   $ fw_setenv bootcmd 'set fdt_high 0x87000000 && \
+       set bootargs ubi.mtd=rootfs root=mtd:ubi_rootfs \
+       rootfstype=squashfs rootwait && nand device 1 && \
+       set mtdids nand1=nand1 && set mtdparts \
+       mtdparts=nand1:0x8000000@0x0(fs) && \
+       ubi part fs && ubi read 0x84000000 kernel && \
+       bootm 0x84000000#config@ap.dk01.1-c2'
+   $ ubiformat /dev/mtd9 -y
+   $ sysupgrade -n
+   openwrt-ipq40xx-generic-sophos_apx120-squashfs-sysupgrade.bin
+7. Device should reboot into OpenWrt
+
+Notes
+-----
+- With firmware version 1.0.019, the image drops directly
+  into a shell, so NAND glitching may be skipped.
+- The platform sysupgrade script reflashes the entire
+  die-0 UBI partition via `ubiformat` — live volume
+  manipulation would leave the UBI layout in a state the
+  stock U-Boot rejects, which bricks the device.
+
+Known Issues
+------------
+- Some device revisions have an TPM chip that
+  is not detected/supported or is broken
+
+Signed-off-by: Morice Olbert <synapse7062@spnkr.de>
+Link: https://github.com/openwrt/openwrt/pull/24328
+Signed-off-by: Jonas Jelonek <jelonek.jonas@gmail.com>
+---
+ .../uboot-tools/uboot-envtools/files/ipq40xx  |   3 +-
+ .../ipq40xx/base-files/etc/board.d/02_network |   3 +
+ .../base-files/lib/upgrade/platform.sh        |   6 +
+ .../arm/boot/dts/qcom/qcom-ipq4019-apx120.dts | 336 ++++++++++++++++++
+ target/linux/ipq40xx/image/generic.mk         |  16 +
+ 5 files changed, 363 insertions(+), 1 deletion(-)
+ create mode 100644 target/linux/ipq40xx/files-6.12/arch/arm/boot/dts/qcom/qcom-ipq4019-apx120.dts
+
+diff --git a/package/boot/uboot-tools/uboot-envtools/files/ipq40xx b/package/boot/uboot-tools/uboot-envtools/files/ipq40xx
+index fc0ac333349..54ecb105c7a 100644
+--- a/package/boot/uboot-tools/uboot-envtools/files/ipq40xx
++++ b/package/boot/uboot-tools/uboot-envtools/files/ipq40xx
+@@ -25,7 +25,8 @@ openmesh,a42|\
+ openmesh,a62|\
+ pakedge,wr-1|\
+ plasmacloud,pa1200|\
+-plasmacloud,pa2200)
++plasmacloud,pa2200|\
++sophos,apx120)
+ 	ubootenv_add_uci_config "/dev/mtd5" "0x0" "0x10000" "0x10000"
+ 	;;
+ aruba,ap-303)
+diff --git a/target/linux/ipq40xx/base-files/etc/board.d/02_network b/target/linux/ipq40xx/base-files/etc/board.d/02_network
+index 715c439a845..d6d61f1e79a 100644
+--- a/target/linux/ipq40xx/base-files/etc/board.d/02_network
++++ b/target/linux/ipq40xx/base-files/etc/board.d/02_network
+@@ -142,6 +142,9 @@ ipq40xx_setup_interfaces()
+ 	skspruce,wia3300-20)
+ 		ucidef_set_interfaces_lan_wan "ETH2" "ETH1"
+ 		;;
++	sophos,apx120)
++		ucidef_set_interface_lan "lan"
++		;;
+ 	zte,mf286d)
+ 		ucidef_set_interfaces_lan_wan "lan2 lan3 lan4" "wan"
+ 		;;
+diff --git a/target/linux/ipq40xx/base-files/lib/upgrade/platform.sh b/target/linux/ipq40xx/base-files/lib/upgrade/platform.sh
+index ed62eabe128..cee5e15b71d 100644
+--- a/target/linux/ipq40xx/base-files/lib/upgrade/platform.sh
++++ b/target/linux/ipq40xx/base-files/lib/upgrade/platform.sh
+@@ -238,6 +238,12 @@ platform_do_upgrade() {
+ 	sony,ncp-hg100-cellular)
+ 		sony_emmc_do_upgrade "$1"
+ 		;;
++	sophos,apx120)
++		CI_UBIPART="rootfs"
++		# Strip fwtool trailer for eraseblock alignment before ubiformat.
++		fwtool -q -t -i /dev/null "$1" || true
++		nand_do_upgrade "$1"
++		;;
+ 	teltonika,rutx10|\
+ 	teltonika,rutx50|\
+ 	zte,mf18a|\
+diff --git a/target/linux/ipq40xx/files-6.12/arch/arm/boot/dts/qcom/qcom-ipq4019-apx120.dts b/target/linux/ipq40xx/files-6.12/arch/arm/boot/dts/qcom/qcom-ipq4019-apx120.dts
+new file mode 100644
+index 00000000000..36e2c4d66ee
+--- /dev/null
++++ b/target/linux/ipq40xx/files-6.12/arch/arm/boot/dts/qcom/qcom-ipq4019-apx120.dts
+@@ -0,0 +1,336 @@
++// SPDX-License-Identifier: GPL-2.0-or-later OR MIT
++
++#include "qcom-ipq4019.dtsi"
++#include <dt-bindings/gpio/gpio.h>
++#include <dt-bindings/input/input.h>
++#include <dt-bindings/leds/common.h>
++#include <dt-bindings/soc/qcom,tcsr.h>
++
++/ {
++	model = "Sophos APX 120";
++	compatible = "sophos,apx120", "qcom,ipq4019";
++
++	aliases {
++		ethernet0 = &gmac;
++		led-boot = &led_green;
++		led-failsafe = &led_red;
++		led-running = &led_green;
++		led-upgrade = &led_red;
++		label-mac-device = &gmac;
++	};
++
++	chosen {
++		bootargs-append = " root=/dev/ubiblock0_1 ubi.mtd=data";
++	};
++
++	soc {
++		counter@4a1000 {
++			compatible = "qcom,qca-gcnt";
++			reg = <0x4a1000 0x4>;
++		};
++
++		tcsr@1949000 {
++			compatible = "qcom,tcsr";
++			reg = <0x1949000 0x100>;
++			qcom,wifi_glb_cfg = <TCSR_WIFI_GLB_CFG>;
++		};
++
++		tcsr@194b000 {
++			compatible = "qcom,tcsr";
++			reg = <0x194b000 0x100>;
++			qcom,usb-hsphy-mode-select = <TCSR_USB_HSPHY_HOST_MODE>;
++		};
++
++		ess_tcsr@1953000 {
++			compatible = "qcom,tcsr";
++			reg = <0x1953000 0x1000>;
++			qcom,ess-interface-select = <TCSR_ESS_PSGMII>;
++		};
++
++		tcsr@1957000 {
++			compatible = "qcom,tcsr";
++			reg = <0x1957000 0x100>;
++			qcom,wifi_noc_memtype_m0_m2 = <TCSR_WIFI_NOC_MEMTYPE_M0_M2>;
++		};
++	};
++
++	keys {
++		compatible = "gpio-keys";
++
++		reset {
++			label = "reset";
++			gpios = <&tlmm 2 GPIO_ACTIVE_LOW>;
++			linux,code = <KEY_RESTART>;
++		};
++	};
++
++	leds {
++		compatible = "gpio-leds";
++
++		led_green: green {
++			function = LED_FUNCTION_POWER;
++			color = <LED_COLOR_ID_GREEN>;
++			gpios = <&tlmm 3 GPIO_ACTIVE_HIGH>;
++			default-state = "on";
++		};
++
++		led_red: red {
++			function = LED_FUNCTION_STATUS;
++			color = <LED_COLOR_ID_RED>;
++			gpios = <&tlmm 4 GPIO_ACTIVE_HIGH>;
++			panic-indicator;
++		};
++	};
++};
++
++&watchdog {
++	status = "okay";
++};
++
++&prng {
++	status = "okay";
++};
++
++&blsp_dma {
++	status = "okay";
++};
++
++&blsp1_uart1 {
++	status = "okay";
++	pinctrl-0 = <&serial_0_pins>;
++	pinctrl-names = "default";
++};
++
++&blsp1_i2c3 {
++	status = "okay";
++	pinctrl-0 = <&i2c_0_pins>;
++	pinctrl-names = "default";
++
++	tpm@29 {
++		compatible = "atmel,at97sc3204t";
++		reg = <0x29>;
++	};
++};
++
++&blsp1_spi1 {
++	status = "okay";
++
++	pinctrl-0 = <&spi_0_pins>;
++	pinctrl-names = "default";
++	cs-gpios = <&tlmm 54 GPIO_ACTIVE_LOW>,
++		   <&tlmm  0 GPIO_ACTIVE_LOW>;
++
++	flash@0 {
++		compatible = "jedec,spi-nor";
++		reg = <0>;
++		spi-max-frequency = <24000000>;
++
++		partitions {
++			compatible = "fixed-partitions";
++			#address-cells = <1>;
++			#size-cells = <1>;
++
++			partition@0 {
++				label = "SBL1";
++				reg = <0x00000000 0x00040000>;
++				read-only;
++			};
++
++			partition@40000 {
++				label = "MIBIB";
++				reg = <0x00040000 0x00020000>;
++				read-only;
++			};
++
++			partition@60000 {
++				label = "QSEE";
++				reg = <0x00060000 0x00060000>;
++				read-only;
++			};
++
++			partition@c0000 {
++				label = "CDT";
++				reg = <0x000c0000 0x00010000>;
++				read-only;
++			};
++
++			partition@d0000 {
++				label = "DDRPARAMS";
++				reg = <0x000d0000 0x00010000>;
++				read-only;
++			};
++
++			partition@e0000 {
++				label = "APPSBLENV";
++				reg = <0x000e0000 0x00010000>;
++			};
++
++			partition@f0000 {
++				label = "APPSBL";
++				reg = <0x000f0000 0x00080000>;
++				read-only;
++			};
++
++			partition@170000 {
++				label = "ART";
++				reg = <0x00170000 0x00010000>;
++				read-only;
++
++				nvmem-layout {
++					compatible = "fixed-layout";
++					#address-cells = <1>;
++					#size-cells = <1>;
++
++					macaddr_art_0: macaddr@0 {
++						reg = <0x0 0x6>;
++					};
++
++					precal_art_1000: precal@1000 {
++						reg = <0x1000 0x2f20>;
++					};
++
++					precal_art_5000: precal@5000 {
++						reg = <0x5000 0x2f20>;
++					};
++				};
++			};
++		};
++	};
++
++	nand@1 {
++		compatible = "spi-nand";
++		reg = <1>;
++		spi-max-frequency = <24000000>;
++
++		partitions {
++			compatible = "fixed-partitions";
++			#address-cells = <1>;
++			#size-cells = <1>;
++
++			/* Dual-die NAND: UBI on die 0, data on die 1 */
++			partition@0 {
++				label = "rootfs";
++				reg = <0x00000000 0x08000000>;
++				linux,rootfs;
++			};
++
++			partition@8000000 {
++				label = "data";
++				reg = <0x08000000 0x08000000>;
++			};
++		};
++	};
++};
++
++&tlmm {
++	serial_0_pins: serial_0_pinmux {
++		mux {
++			pins = "gpio60", "gpio61";
++			function = "blsp_uart0";
++			bias-disable;
++		};
++	};
++
++	i2c_0_pins: i2c_0_pinmux {
++		mux {
++			pins = "gpio58", "gpio59";
++			function = "blsp_i2c0";
++			bias-disable;
++		};
++	};
++
++	mdio_pins: mdio_pinmux {
++		mux_mdio {
++			pins = "gpio53";
++			function = "mdio";
++			bias-pull-up;
++		};
++
++		mux_mdc {
++			pins = "gpio52";
++			function = "mdc";
++			bias-pull-up;
++		};
++	};
++
++	spi_0_pins: spi_0_pinmux {
++		mux_spi {
++			function = "blsp_spi0";
++			pins = "gpio55", "gpio56", "gpio57";
++			drive-strength = <12>;
++			bias-disable;
++		};
++
++		mux_cs {
++			function = "gpio";
++			pins = "gpio54", "gpio0";
++			drive-strength = <2>;
++			bias-disable;
++			output-high;
++		};
++	};
++
++	phy_reset {
++		gpio-hog;
++		line-name = "phy-reset";
++		gpios = <62 GPIO_ACTIVE_HIGH>;
++		output-high;
++	};
++};
++
++&mdio {
++	status = "okay";
++	pinctrl-0 = <&mdio_pins>;
++	pinctrl-names = "default";
++};
++
++&gmac {
++	status = "okay";
++
++	nvmem-cells = <&macaddr_art_0>;
++	nvmem-cell-names = "mac-address";
++};
++
++&switch {
++	status = "okay";
++};
++
++&swport5 {
++	status = "okay";
++
++	label = "lan";
++};
++
++&usb3_ss_phy {
++	status = "okay";
++};
++
++&usb3_hs_phy {
++	status = "okay";
++};
++
++&usb3 {
++	status = "okay";
++};
++
++&usb2_hs_phy {
++	status = "okay";
++};
++
++&usb2 {
++	status = "okay";
++};
++
++&wifi0 {
++	status = "okay";
++	nvmem-cell-names = "pre-calibration";
++	nvmem-cells = <&precal_art_1000>;
++	qcom,ath10k-calibration-variant = "Sophos-APX120";
++};
++
++&wifi1 {
++	status = "okay";
++	nvmem-cell-names = "pre-calibration";
++	nvmem-cells = <&precal_art_5000>;
++	qcom,ath10k-calibration-variant = "Sophos-APX120";
++};
+diff --git a/target/linux/ipq40xx/image/generic.mk b/target/linux/ipq40xx/image/generic.mk
+index 73359005ad6..756b7e96483 100644
+--- a/target/linux/ipq40xx/image/generic.mk
++++ b/target/linux/ipq40xx/image/generic.mk
+@@ -1250,6 +1250,22 @@ define Device/sony_ncp-hg100-cellular
+ endef
+ TARGET_DEVICES += sony_ncp-hg100-cellular
+ 
++define Device/sophos_apx120
++	$(call Device/FitImage)
++	$(call Device/UbiFit)
++	DEVICE_VENDOR := Sophos
++	DEVICE_MODEL := APX 120
++	SOC := qcom-ipq4019
++	DEVICE_DTS_CONFIG := config@ap.dk01.1-c2
++	BLOCKSIZE := 128k
++	PAGESIZE := 2048
++	IMAGES := sysupgrade.bin
++	DEVICE_PACKAGES := kmod-tpm-i2c-atmel
++	# Stock U-Boot rejects UBI layout changes from sysupgrade-tar
++	IMAGE/sysupgrade.bin := append-ubi | append-metadata
++endef
++TARGET_DEVICES += sophos_apx120
++
+ define Device/teltonika_rutx10
+ 	$(call Device/FitImage)
+ 	$(call Device/UbiFit)

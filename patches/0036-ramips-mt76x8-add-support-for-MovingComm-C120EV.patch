@@ -1,0 +1,303 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: librarat876 <bloproton92@proton.me>
+Date: Sat, 9 May 2026 15:53:46 -0300
+Subject: [PATCH 36/76] ramips: mt76x8: add support for MovingComm C120EV
+
+Add support for the MovingComm C120EV 4G LTE router based on MT7628AN.
+
+Hardware specification:
+- SoC: MediaTek MT7628AN (580MHz)
+- RAM: 64 MiB DDR2
+- Flash: 16 MiB SPI NOR
+- WiFi: 2.4 GHz (internal) + 5 GHz (MT7663 via PCIe)
+- Ethernet: 4x 10/100Mbps
+- USB: 1x USB 2.0 (internal only)
+- Modem: Thinkwill ML7820+ (manual configuration required)
+- UART: 57600 8N1
+- Power: 12V DC, 1A
+
+Flash instructions:
+The stock firmware is OpenWrt-based (Chaos Calmer 15.05.1).
+Flash the OpenWrt sysupgrade image via vendor Web UI at 192.168.99.1
+(admin/admin), section System - Firmware Upgrade.
+
+Recovery (requires UART access):
+- UART: Connect to ttyS0 @ 57600, press 4 during boot delay (5 seconds)
+- TFTP: Server 10.10.10.3, client 10.10.10.123, load image to 0x80000000
+
+MAC address layout:
+- LAN: factory 0x04
+- WAN: factory 0x28 (02_network)
+- 2.4GHz: factory 0x2e
+- 5GHz: factory 0x8004 (PCIe EEPROM)
+
+Signed-off-by: librarat876 <bloproton92@proton.me>
+Link: https://github.com/openwrt/openwrt/pull/23273
+Signed-off-by: Hauke Mehrtens <hauke@hauke-m.de>
+---
+ .../ramips/dts/mt7628an_movingcomm_c120ev.dts | 195 ++++++++++++++++++
+ target/linux/ramips/image/mt76x8.mk           |   9 +
+ .../mt76x8/base-files/etc/board.d/01_leds     |   3 +
+ .../mt76x8/base-files/etc/board.d/02_network  |   6 +-
+ 4 files changed, 212 insertions(+), 1 deletion(-)
+ create mode 100644 target/linux/ramips/dts/mt7628an_movingcomm_c120ev.dts
+
+diff --git a/target/linux/ramips/dts/mt7628an_movingcomm_c120ev.dts b/target/linux/ramips/dts/mt7628an_movingcomm_c120ev.dts
+new file mode 100644
+index 00000000000..ebc6180e41f
+--- /dev/null
++++ b/target/linux/ramips/dts/mt7628an_movingcomm_c120ev.dts
+@@ -0,0 +1,195 @@
++// SPDX-License-Identifier: GPL-2.0-or-later OR MIT
++/dts-v1/;
++
++#include "mt7628an.dtsi"
++#include <dt-bindings/gpio/gpio.h>
++#include <dt-bindings/input/input.h>
++#include <dt-bindings/leds/common.h>
++
++/ {
++	compatible = "movingcomm,c120ev", "mediatek,mt7628an-soc";
++	model = "MovingComm C120EV";
++
++	aliases {
++		led-boot = &led_wps;
++		led-failsafe = &led_wps;
++		led-running = &led_wps;
++		led-upgrade = &led_wps;
++		label-mac-device = &ethernet;
++	};
++
++	keys {
++		compatible = "gpio-keys";
++
++		reset {
++			label = "reset";
++			gpios = <&gpio 39 GPIO_ACTIVE_LOW>;
++			linux,code = <KEY_RESTART>;
++		};
++
++		wps {
++			label = "wps";
++			gpios = <&gpio 38 GPIO_ACTIVE_LOW>;
++			linux,code = <KEY_WPS_BUTTON>;
++		};
++	};
++
++	leds {
++		compatible = "gpio-leds";
++
++		wlan2g {
++			color = <LED_COLOR_ID_GREEN>;
++			function = LED_FUNCTION_WLAN;
++			gpios = <&gpio 44 GPIO_ACTIVE_LOW>;
++			linux,default-trigger = "phy0tpt";
++		};
++
++		lan {
++			color = <LED_COLOR_ID_GREEN>;
++			function = LED_FUNCTION_LAN;
++			gpios = <&gpio 1 GPIO_ACTIVE_LOW>;
++			linux,default-trigger = "netdev";
++		};
++
++		led_wps: wps {
++			color = <LED_COLOR_ID_GREEN>;
++			function = LED_FUNCTION_WPS;
++			gpios = <&gpio 37 GPIO_ACTIVE_LOW>;
++		};
++	};
++
++	gpio_export {
++		compatible = "gpio-export";
++
++		board_power {
++			gpio-export,name = "board-power";
++			gpio-export,output = <1>;
++			gpios = <&gpio 0 GPIO_ACTIVE_HIGH>;
++		};
++
++		modem_power {
++			gpio-export,name = "modem-power";
++			gpio-export,output = <0>;
++			gpios = <&gpio 5 GPIO_ACTIVE_HIGH>;
++		};
++	};
++};
++
++&state_default {
++	gpio {
++		groups = "i2c", "spis", "gpio", "refclk", "wled_an", "wdt";
++		function = "gpio";
++	};
++};
++
++&spi0 {
++	status = "okay";
++
++	flash@0 {
++		compatible = "jedec,spi-nor";
++		reg = <0>;
++		spi-max-frequency = <40000000>;
++		m25p,fast-read;
++
++		partitions {
++			compatible = "fixed-partitions";
++			#address-cells = <1>;
++			#size-cells = <1>;
++
++			partition@0 {
++				label = "u-boot";
++				reg = <0x0 0x30000>;
++				read-only;
++			};
++
++			partition@30000 {
++				label = "u-boot-env";
++				reg = <0x30000 0x10000>;
++				read-only;
++			};
++
++			partition@40000 {
++				label = "factory";
++				reg = <0x40000 0x10000>;
++				read-only;
++
++				nvmem-layout {
++					compatible = "fixed-layout";
++					#address-cells = <1>;
++					#size-cells = <1>;
++
++					eeprom_factory_0: eeprom@0 {
++						reg = <0x0 0x400>;
++					};
++
++					eeprom_factory_8000: eeprom@8000 {
++						reg = <0x8000 0x4da8>;
++					};
++
++					macaddr_factory_4: macaddr@4 {
++						reg = <0x4 0x6>;
++					};
++
++					macaddr_factory_28: macaddr@28 {
++						reg = <0x28 0x6>;
++					};
++
++					macaddr_factory_2e: macaddr@2e {
++						reg = <0x2e 0x6>;
++					};
++
++					macaddr_factory_8004: macaddr@8004 {
++						reg = <0x8004 0x6>;
++					};
++				};
++			};
++
++			partition@50000 {
++				compatible = "denx,uimage";
++				label = "firmware";
++				reg = <0x50000 0xfb0000>;
++			};
++		};
++	};
++};
++
++&esw {
++	mediatek,portmap = <0x3e>;
++};
++
++&ethernet {
++	nvmem-cells = <&macaddr_factory_4>;
++	nvmem-cell-names = "mac-address";
++};
++
++&wmac {
++	status = "okay";
++	nvmem-cells = <&eeprom_factory_0>, <&macaddr_factory_2e>;
++	nvmem-cell-names = "eeprom", "mac-address";
++};
++
++&pcie {
++	status = "okay";
++};
++
++&pcie0 {
++	wifi@0,0 {
++		compatible = "mediatek,mt76";
++		reg = <0x0000 0 0 0 0>;
++		nvmem-cells = <&eeprom_factory_8000>, <&macaddr_factory_8004>;
++		nvmem-cell-names = "eeprom", "mac-address";
++		ieee80211-freq-limit = <5000000 6000000>;
++	};
++};
++
++&usbphy {
++	status = "okay";
++};
++
++&ehci {
++	status = "okay";
++};
++
++&ohci {
++	status = "okay";
++};
+diff --git a/target/linux/ramips/image/mt76x8.mk b/target/linux/ramips/image/mt76x8.mk
+index 01069a5f863..9e1ab597133 100644
+--- a/target/linux/ramips/image/mt76x8.mk
++++ b/target/linux/ramips/image/mt76x8.mk
+@@ -636,6 +636,15 @@ define Device/motorola_mwr03
+ endef
+ TARGET_DEVICES += motorola_mwr03
+ 
++define Device/movingcomm_c120ev
++  IMAGE_SIZE := 16064k
++  DEVICE_VENDOR := MovingComm
++  DEVICE_MODEL := C120EV
++  DEVICE_PACKAGES := kmod-mt7615e kmod-mt7663-firmware-ap kmod-usb2 kmod-usb-ohci kmod-usb-net-cdc-ether kmod-usb-serial-option
++  IMAGE/sysupgrade.bin := append-kernel | pad-to $$$$(BLOCKSIZE) | append-rootfs | pad-rootfs | check-size | append-metadata
++endef
++TARGET_DEVICES += movingcomm_c120ev
++
+ define Device/netgear_r6020
+   $(Device/netgear_sercomm_nor)
+   IMAGE_SIZE := 7104k
+diff --git a/target/linux/ramips/mt76x8/base-files/etc/board.d/01_leds b/target/linux/ramips/mt76x8/base-files/etc/board.d/01_leds
+index b245805b72a..89365fe4b45 100644
+--- a/target/linux/ramips/mt76x8/base-files/etc/board.d/01_leds
++++ b/target/linux/ramips/mt76x8/base-files/etc/board.d/01_leds
+@@ -84,6 +84,9 @@ keenetic,kn-1713)
+ mediatek,linkit-smart-7688)
+ 	ucidef_set_led_wlan "wifi" "wifi" "orange:wifi" "phy0tpt"
+ 	;;
++movingcomm,c120ev)
++	ucidef_set_led_netdev "lan" "lan" "green:lan" "eth0" "link"
++	;;
+ oraybox,x1)
+ 	ucidef_set_led_netdev "wifi" "wifi" "blue:status" "wlan0"
+ 	;;
+diff --git a/target/linux/ramips/mt76x8/base-files/etc/board.d/02_network b/target/linux/ramips/mt76x8/base-files/etc/board.d/02_network
+index fbf5fc52e94..9a699724e0e 100644
+--- a/target/linux/ramips/mt76x8/base-files/etc/board.d/02_network
++++ b/target/linux/ramips/mt76x8/base-files/etc/board.d/02_network
+@@ -140,7 +140,8 @@ ramips_setup_interfaces()
+ 	keenetic,kn-1510|\
+ 	keenetic,kn-1613|\
+ 	keenetic,kn-1713|\
+-	motorola,mwr03)
++	motorola,mwr03|\
++	movingcomm,c120ev)
+ 		ucidef_add_switch "switch0" \
+ 			"1:lan" "2:lan" "3:lan" "0:wan" "6@eth0"
+ 		;;
+@@ -347,6 +348,9 @@ ramips_setup_macs()
+ 		label_mac=$(mtd_get_mac_binary factory 0x4)
+ 		wan_mac=$(macaddr_add "$label_mac" 2)
+ 		;;
++	movingcomm,c120ev)
++		wan_mac=$(mtd_get_mac_binary factory 0x28)
++		;;
+ 	onion,omega2|\
+ 	onion,omega2p|\
+ 	vocore,vocore2|\

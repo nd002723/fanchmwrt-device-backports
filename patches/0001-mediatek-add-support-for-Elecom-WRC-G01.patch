@@ -1,0 +1,987 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Yuhei Amemiya <minihui@me.com>
+Date: Sun, 21 Dec 2025 15:03:20 +0800
+Subject: [PATCH 01/76] mediatek: add support for Elecom WRC-G01
+
+Hardware is identical to WRC-X3200GST3.
+- SoC: MediaTek MT7622
+- RAM: 512MB
+- Flash: 128MB SPI-NAND
+
+The -W suffix in the retail name (WRC-G01-W) denotes the casing color
+and is omitted from the model name in the OpenWrt configuration to
+maintain consistency with other Elecom devices.
+
+Signed-off-by: Yuhei Amemiya <minihui@me.com>
+Link: https://github.com/openwrt/openwrt/pull/21238
+Signed-off-by: Hauke Mehrtens <hauke@hauke-m.de>
+---
+ .../mediatek/dts/mt7622-elecom-wrc-g01.dts    |   9 +
+ .../dts/mt7622-elecom-wrc-x3200gst3.dts       | 427 +----------------
+ .../dts/mt7622-elecom-wrc-x3200gst3.dtsi      | 431 ++++++++++++++++++
+ target/linux/mediatek/image/mt7622.mk         |  25 +-
+ .../mt7622/base-files/lib/upgrade/platform.sh |   2 +
+ 5 files changed, 463 insertions(+), 431 deletions(-)
+ create mode 100644 target/linux/mediatek/dts/mt7622-elecom-wrc-g01.dts
+ create mode 100644 target/linux/mediatek/dts/mt7622-elecom-wrc-x3200gst3.dtsi
+
+diff --git a/target/linux/mediatek/dts/mt7622-elecom-wrc-g01.dts b/target/linux/mediatek/dts/mt7622-elecom-wrc-g01.dts
+new file mode 100644
+index 00000000000..510487625a3
+--- /dev/null
++++ b/target/linux/mediatek/dts/mt7622-elecom-wrc-g01.dts
+@@ -0,0 +1,9 @@
++// SPDX-License-Identifier: GPL-2.0-or-later OR MIT
++/dts-v1/;
++
++#include "mt7622-elecom-wrc-x3200gst3.dtsi"
++
++/ {
++	model = "ELECOM WRC-G01";
++	compatible = "elecom,wrc-g01", "mediatek,mt7622";
++};
+diff --git a/target/linux/mediatek/dts/mt7622-elecom-wrc-x3200gst3.dts b/target/linux/mediatek/dts/mt7622-elecom-wrc-x3200gst3.dts
+index c78a6f4a078..3c75f99141a 100644
+--- a/target/linux/mediatek/dts/mt7622-elecom-wrc-x3200gst3.dts
++++ b/target/linux/mediatek/dts/mt7622-elecom-wrc-x3200gst3.dts
+@@ -1,434 +1,9 @@
+ // SPDX-License-Identifier: GPL-2.0-or-later OR MIT
+ /dts-v1/;
+ 
+-#include <dt-bindings/input/input.h>
+-#include <dt-bindings/gpio/gpio.h>
+-#include <dt-bindings/leds/common.h>
+-#include <dt-bindings/pinctrl/mt65xx.h>
+-
+-#include "mt7622.dtsi"
+-#include "mt6380.dtsi"
++#include "mt7622-elecom-wrc-x3200gst3.dtsi"
+ 
+ / {
+ 	model = "ELECOM WRC-X3200GST3";
+ 	compatible = "elecom,wrc-x3200gst3", "mediatek,mt7622";
+-
+-	aliases {
+-		serial0 = &uart0;
+-		led-boot = &led_power_green;
+-		led-failsafe = &led_power_red;
+-		led-running = &led_power_green;
+-		led-upgrade = &led_power_green;
+-		label-mac-device = &wan;
+-	};
+-
+-	chosen {
+-		bootargs = "earlycon=uart8250,mmio32,0x11002000 console=ttyS0,115200n8 swiotlb=512";
+-	};
+-
+-	memory@40000000 {
+-		reg = <0 0x40000000 0 0x1f000000>;
+-		device_type = "memory";
+-	};
+-
+-	leds {
+-		compatible = "gpio-leds";
+-
+-		led-0 {
+-			gpios = <&pio 47 GPIO_ACTIVE_HIGH>;
+-			color = <LED_COLOR_ID_RED>;
+-			function = LED_FUNCTION_WPS;
+-		};
+-
+-		led_power_red: led-1 {
+-			gpios = <&pio 48 GPIO_ACTIVE_HIGH>;
+-			color = <LED_COLOR_ID_RED>;
+-			function = LED_FUNCTION_POWER;
+-			function-enumerator = <1>;
+-		};
+-
+-		led_power_green: led-2 {
+-			gpios = <&pio 49 GPIO_ACTIVE_HIGH>;
+-			color = <LED_COLOR_ID_GREEN>;
+-			function = LED_FUNCTION_POWER;
+-			function-enumerator = <2>;
+-		};
+-
+-		led-3 {
+-			gpios = <&pio 50 GPIO_ACTIVE_HIGH>;
+-			color = <LED_COLOR_ID_BLUE>;
+-			function = LED_FUNCTION_POWER;
+-			function-enumerator = <3>;
+-		};
+-
+-		led-4 {
+-			gpios = <&pio 85 GPIO_ACTIVE_HIGH>;
+-			color = <LED_COLOR_ID_WHITE>;
+-			function = LED_FUNCTION_WLAN;
+-			function-enumerator = <1>;
+-			linux,default-trigger = "phy0tpt";
+-		};
+-
+-		led-5 {
+-			gpios = <&pio 89 GPIO_ACTIVE_HIGH>;
+-			color = <LED_COLOR_ID_WHITE>;
+-			function = LED_FUNCTION_WLAN;
+-			function-enumerator = <2>;
+-			linux,default-trigger = "phy1radio";
+-		};
+-	};
+-
+-	keys {
+-		compatible = "gpio-keys";
+-
+-		reset {
+-			label = "reset";
+-			gpios = <&pio 0 GPIO_ACTIVE_LOW>;
+-			linux,code = <KEY_RESTART>;
+-		};
+-
+-		ap {
+-			label = "ap";
+-			gpios = <&pio 42 GPIO_ACTIVE_LOW>;
+-			linux,code = <BTN_0>;
+-			linux,input-type = <EV_SW>;
+-		};
+-
+-		router {
+-			label = "router";
+-			gpios = <&pio 43 GPIO_ACTIVE_LOW>;
+-			linux,code = <BTN_1>;
+-			linux,input-type = <EV_SW>;
+-		};
+-
+-		wps {
+-			label = "wps";
+-			gpios = <&pio 102 GPIO_ACTIVE_LOW>;
+-			linux,code = <KEY_WPS_BUTTON>;
+-		};
+-	};
+-};
+-
+-&cpu0 {
+-	proc-supply = <&mt6380_vcpu_reg>;
+-	sram-supply = <&mt6380_vm_reg>;
+-};
+-
+-&cpu1 {
+-	proc-supply = <&mt6380_vcpu_reg>;
+-	sram-supply = <&mt6380_vm_reg>;
+-};
+-
+-&pio {
+-	eth_pins: eth-pins {
+-		mux {
+-			function = "eth";
+-			groups = "mdc_mdio", "rgmii_via_gmac2";
+-		};
+-	};
+-
+-	pcie0_pins: pcie0-pins {
+-		mux {
+-			function = "pcie";
+-			groups = "pcie0_pad_perst",
+-				 "pcie0_1_waken",
+-				 "pcie0_1_clkreq";
+-		};
+-	};
+-
+-	pmic_bus_pins: pmic-bus-pins {
+-		mux {
+-			function = "pmic";
+-			groups = "pmic_bus";
+-		};
+-	};
+-
+-	pwm7_pins: pwm1-2-pins {
+-		mux {
+-			function = "pwm";
+-			groups = "pwm_ch7_2";
+-		};
+-	};
+-
+-	/* Serial NAND is shared pin with SPI-NOR */
+-	serial_nand_pins: serial-nand-pins {
+-		mux {
+-			function = "flash";
+-			groups = "snfi";
+-		};
+-
+-		conf-cmd-data {
+-			pins = "SPI_WP", "SPI_HOLD", "SPI_MOSI",
+-			       "SPI_MISO", "SPI_CS";
+-			drive-strength = <MTK_DRIVE_16mA>;
+-			bias-pull-up;
+-		};
+-
+-		conf-clk {
+-			pins = "SPI_CLK";
+-			drive-strength = <MTK_DRIVE_16mA>;
+-			bias-pull-down;
+-		};
+-	};
+-
+-	uart0_pins: uart0-pins {
+-		mux {
+-			function = "uart";
+-			groups = "uart0_0_tx_rx" ;
+-		};
+-	};
+-
+-	watchdog_pins: watchdog-pins {
+-		mux {
+-			function = "watchdog";
+-			groups = "watchdog";
+-		};
+-	};
+-};
+-
+-&eth {
+-	pinctrl-names = "default";
+-	pinctrl-0 = <&eth_pins>;
+-	status = "okay";
+-
+-	gmac0: mac@0 {
+-		compatible = "mediatek,eth-mac";
+-		reg = <0>;
+-
+-		phy-connection-type = "2500base-x";
+-
+-		nvmem-cells = <&macaddr_factory_7fff4>;
+-		nvmem-cell-names = "mac-address";
+-
+-		fixed-link {
+-			speed = <2500>;
+-			full-duplex;
+-			pause;
+-		};
+-	};
+-
+-	mdio-bus {
+-		#address-cells = <1>;
+-		#size-cells = <0>;
+-
+-		switch@1f {
+-			compatible = "mediatek,mt7531";
+-			reg = <31>;
+-			interrupt-controller;
+-			#interrupt-cells = <1>;
+-			interrupt-parent = <&pio>;
+-			interrupts = <53 IRQ_TYPE_LEVEL_HIGH>;
+-			reset-gpios = <&pio 54 GPIO_ACTIVE_HIGH>;
+-
+-			ports {
+-				#address-cells = <1>;
+-				#size-cells = <0>;
+-
+-				wan: port@0 {
+-					reg = <0>;
+-					label = "wan";
+-
+-					nvmem-cells = <&macaddr_factory_7fffa>;
+-					nvmem-cell-names = "mac-address";
+-				};
+-
+-				port@1 {
+-					reg = <1>;
+-					label = "lan4";
+-				};
+-
+-				port@2 {
+-					reg = <2>;
+-					label = "lan3";
+-				};
+-
+-				port@3 {
+-					reg = <3>;
+-					label = "lan2";
+-				};
+-
+-				port@4 {
+-					reg = <4>;
+-					label = "lan1";
+-				};
+-
+-				port@6 {
+-					reg = <6>;
+-					ethernet = <&gmac0>;
+-					phy-mode = "2500base-x";
+-
+-					fixed-link {
+-						speed = <2500>;
+-						full-duplex;
+-						pause;
+-					};
+-				};
+-			};
+-		};
+-	};
+-};
+-
+-&bch {
+-	status = "okay";
+-};
+-
+-&snfi {
+-	pinctrl-names = "default";
+-	pinctrl-0 = <&serial_nand_pins>;
+-	status = "okay";
+-
+-	flash@0 {
+-		compatible = "spi-nand";
+-		reg = <0>;
+-		spi-tx-bus-width = <4>;
+-		spi-rx-bus-width = <4>;
+-		nand-ecc-engine = <&snfi>;
+-		mediatek,bmt-v2;
+-		mediatek,bmt-table-size = <0x1000>;
+-		mediatek,bmt-remap-range = <0x0 0x8c0000>,
+-					   <0x1bc0000 0x30c0000>;
+-
+-		partitions {
+-			compatible = "fixed-partitions";
+-			#address-cells = <1>;
+-			#size-cells = <1>;
+-
+-			partition@0 {
+-				label = "Preloader";
+-				reg = <0x0 0x80000>;
+-				read-only;
+-			};
+-
+-			partition@80000 {
+-				label = "ATF";
+-				reg = <0x80000 0x40000>;
+-				read-only;
+-			};
+-
+-			partition@c0000 {
+-				label = "u-boot";
+-				reg = <0xc0000 0x80000>;
+-				read-only;
+-			};
+-
+-			partition@140000 {
+-				label = "u-boot-env";
+-				reg = <0x140000 0x80000>;
+-				read-only;
+-			};
+-
+-			factory: partition@1c0000 {
+-				label = "factory";
+-				reg = <0x1c0000 0x100000>;
+-				read-only;
+-
+-				nvmem-layout {
+-					compatible = "fixed-layout";
+-					#address-cells = <1>;
+-					#size-cells = <1>;
+-
+-					macaddr_factory_4: macaddr@4 {
+-						compatible = "mac-base";
+-						reg = <0x4 0x6>;
+-						#nvmem-cell-cells = <1>;
+-					};
+-
+-					macaddr_factory_7fff4: macaddr@7fff4 {
+-						reg = <0x7fff4 0x6>;
+-					};
+-
+-					macaddr_factory_7fffa: macaddr@7fffa {
+-						reg = <0x7fffa 0x6>;
+-					};
+-				};
+-			};
+-
+-			partition@2c0000 {
+-				label = "kernel";
+-				reg = <0x2c0000 0x600000>;
+-			};
+-
+-			partition@8c0000 {
+-				label = "ubi";
+-				reg = <0x8c0000 0x1300000>;
+-			};
+-
+-			partition@1bc0000 {
+-				label = "tm_pattern";
+-				reg = <0x1bc0000 0x500000>;
+-				read-only;
+-			};
+-
+-			partition@20c0000 {
+-				label = "tm_key";
+-				reg = <0x20c0000 0x100000>;
+-				read-only;
+-			};
+-
+-			partition@21c0000 {
+-				label = "user_data";
+-				reg = <0x21c0000 0xf00000>;
+-				read-only;
+-			};
+-
+-			partition@30c0000 {
+-				label = "reserved";
+-				reg = <0x30c0000 0x4f40000>;
+-				read-only;
+-			};
+-		};
+-	};
+-};
+-
+-&pcie0 {
+-	pinctrl-names = "default";
+-	pinctrl-0 = <&pcie0_pins>;
+-	status = "okay";
+-};
+-
+-&slot0 {
+-	status = "okay";
+-
+-	wifi@0,0 {
+-		compatible = "mediatek,mt76";
+-		reg = <0x0000 0 0 0 0>;
+-		mediatek,mtd-eeprom = <&factory 0x5000>;
+-		ieee80211-freq-limit = <5000000 6000000>;
+-		nvmem-cells = <&macaddr_factory_4 1>;
+-		nvmem-cell-names = "mac-address";
+-	};
+-};
+-
+-&pwm {
+-	pinctrl-names = "default";
+-	pinctrl-0 = <&pwm7_pins>;
+-	status = "okay";
+-};
+-
+-&pwrap {
+-	pinctrl-names = "default";
+-	pinctrl-0 = <&pmic_bus_pins>;
+-	status = "okay";
+-};
+-
+-&rtc {
+-	status = "disabled";
+-};
+-
+-&uart0 {
+-	pinctrl-names = "default";
+-	pinctrl-0 = <&uart0_pins>;
+-	status = "okay";
+-};
+-
+-&watchdog {
+-	pinctrl-names = "default";
+-	pinctrl-0 = <&watchdog_pins>;
+-	status = "okay";
+-};
+-
+-&wmac {
+-	status = "okay";
+-
+-	mediatek,mtd-eeprom = <&factory 0x0>;
+ };
+diff --git a/target/linux/mediatek/dts/mt7622-elecom-wrc-x3200gst3.dtsi b/target/linux/mediatek/dts/mt7622-elecom-wrc-x3200gst3.dtsi
+new file mode 100644
+index 00000000000..6061943719c
+--- /dev/null
++++ b/target/linux/mediatek/dts/mt7622-elecom-wrc-x3200gst3.dtsi
+@@ -0,0 +1,431 @@
++// SPDX-License-Identifier: GPL-2.0-or-later OR MIT
++/dts-v1/;
++
++#include <dt-bindings/input/input.h>
++#include <dt-bindings/gpio/gpio.h>
++#include <dt-bindings/leds/common.h>
++#include <dt-bindings/pinctrl/mt65xx.h>
++
++#include "mt7622.dtsi"
++#include "mt6380.dtsi"
++
++/ {
++	aliases {
++		serial0 = &uart0;
++		led-boot = &led_power_green;
++		led-failsafe = &led_power_red;
++		led-running = &led_power_green;
++		led-upgrade = &led_power_green;
++		label-mac-device = &wan;
++	};
++
++	chosen {
++		bootargs = "earlycon=uart8250,mmio32,0x11002000 console=ttyS0,115200n8 swiotlb=512";
++	};
++
++	memory@40000000 {
++		reg = <0 0x40000000 0 0x1f000000>;
++		device_type = "memory";
++	};
++
++	leds {
++		compatible = "gpio-leds";
++
++		led-0 {
++			gpios = <&pio 47 GPIO_ACTIVE_HIGH>;
++			color = <LED_COLOR_ID_RED>;
++			function = LED_FUNCTION_WPS;
++		};
++
++		led_power_red: led-1 {
++			gpios = <&pio 48 GPIO_ACTIVE_HIGH>;
++			color = <LED_COLOR_ID_RED>;
++			function = LED_FUNCTION_POWER;
++			function-enumerator = <1>;
++		};
++
++		led_power_green: led-2 {
++			gpios = <&pio 49 GPIO_ACTIVE_HIGH>;
++			color = <LED_COLOR_ID_GREEN>;
++			function = LED_FUNCTION_POWER;
++			function-enumerator = <2>;
++		};
++
++		led-3 {
++			gpios = <&pio 50 GPIO_ACTIVE_HIGH>;
++			color = <LED_COLOR_ID_BLUE>;
++			function = LED_FUNCTION_POWER;
++			function-enumerator = <3>;
++		};
++
++		led-4 {
++			gpios = <&pio 85 GPIO_ACTIVE_HIGH>;
++			color = <LED_COLOR_ID_WHITE>;
++			function = LED_FUNCTION_WLAN;
++			function-enumerator = <1>;
++			linux,default-trigger = "phy0tpt";
++		};
++
++		led-5 {
++			gpios = <&pio 89 GPIO_ACTIVE_HIGH>;
++			color = <LED_COLOR_ID_WHITE>;
++			function = LED_FUNCTION_WLAN;
++			function-enumerator = <2>;
++			linux,default-trigger = "phy1radio";
++		};
++	};
++
++	keys {
++		compatible = "gpio-keys";
++
++		reset {
++			label = "reset";
++			gpios = <&pio 0 GPIO_ACTIVE_LOW>;
++			linux,code = <KEY_RESTART>;
++		};
++
++		ap {
++			label = "ap";
++			gpios = <&pio 42 GPIO_ACTIVE_LOW>;
++			linux,code = <BTN_0>;
++			linux,input-type = <EV_SW>;
++		};
++
++		router {
++			label = "router";
++			gpios = <&pio 43 GPIO_ACTIVE_LOW>;
++			linux,code = <BTN_1>;
++			linux,input-type = <EV_SW>;
++		};
++
++		wps {
++			label = "wps";
++			gpios = <&pio 102 GPIO_ACTIVE_LOW>;
++			linux,code = <KEY_WPS_BUTTON>;
++		};
++	};
++};
++
++&cpu0 {
++	proc-supply = <&mt6380_vcpu_reg>;
++	sram-supply = <&mt6380_vm_reg>;
++};
++
++&cpu1 {
++	proc-supply = <&mt6380_vcpu_reg>;
++	sram-supply = <&mt6380_vm_reg>;
++};
++
++&pio {
++	eth_pins: eth-pins {
++		mux {
++			function = "eth";
++			groups = "mdc_mdio", "rgmii_via_gmac2";
++		};
++	};
++
++	pcie0_pins: pcie0-pins {
++		mux {
++			function = "pcie";
++			groups = "pcie0_pad_perst",
++				 "pcie0_1_waken",
++				 "pcie0_1_clkreq";
++		};
++	};
++
++	pmic_bus_pins: pmic-bus-pins {
++		mux {
++			function = "pmic";
++			groups = "pmic_bus";
++		};
++	};
++
++	pwm7_pins: pwm1-2-pins {
++		mux {
++			function = "pwm";
++			groups = "pwm_ch7_2";
++		};
++	};
++
++	/* Serial NAND is shared pin with SPI-NOR */
++	serial_nand_pins: serial-nand-pins {
++		mux {
++			function = "flash";
++			groups = "snfi";
++		};
++
++		conf-cmd-data {
++			pins = "SPI_WP", "SPI_HOLD", "SPI_MOSI",
++			       "SPI_MISO", "SPI_CS";
++			drive-strength = <MTK_DRIVE_16mA>;
++			bias-pull-up;
++		};
++
++		conf-clk {
++			pins = "SPI_CLK";
++			drive-strength = <MTK_DRIVE_16mA>;
++			bias-pull-down;
++		};
++	};
++
++	uart0_pins: uart0-pins {
++		mux {
++			function = "uart";
++			groups = "uart0_0_tx_rx" ;
++		};
++	};
++
++	watchdog_pins: watchdog-pins {
++		mux {
++			function = "watchdog";
++			groups = "watchdog";
++		};
++	};
++};
++
++&eth {
++	pinctrl-names = "default";
++	pinctrl-0 = <&eth_pins>;
++	status = "okay";
++
++	gmac0: mac@0 {
++		compatible = "mediatek,eth-mac";
++		reg = <0>;
++
++		phy-connection-type = "2500base-x";
++
++		nvmem-cells = <&macaddr_factory_7fff4>;
++		nvmem-cell-names = "mac-address";
++
++		fixed-link {
++			speed = <2500>;
++			full-duplex;
++			pause;
++		};
++	};
++
++	mdio-bus {
++		#address-cells = <1>;
++		#size-cells = <0>;
++
++		switch@1f {
++			compatible = "mediatek,mt7531";
++			reg = <31>;
++			interrupt-controller;
++			#interrupt-cells = <1>;
++			interrupt-parent = <&pio>;
++			interrupts = <53 IRQ_TYPE_LEVEL_HIGH>;
++			reset-gpios = <&pio 54 GPIO_ACTIVE_HIGH>;
++
++			ports {
++				#address-cells = <1>;
++				#size-cells = <0>;
++
++				wan: port@0 {
++					reg = <0>;
++					label = "wan";
++
++					nvmem-cells = <&macaddr_factory_7fffa>;
++					nvmem-cell-names = "mac-address";
++				};
++
++				port@1 {
++					reg = <1>;
++					label = "lan4";
++				};
++
++				port@2 {
++					reg = <2>;
++					label = "lan3";
++				};
++
++				port@3 {
++					reg = <3>;
++					label = "lan2";
++				};
++
++				port@4 {
++					reg = <4>;
++					label = "lan1";
++				};
++
++				port@6 {
++					reg = <6>;
++					ethernet = <&gmac0>;
++					phy-mode = "2500base-x";
++
++					fixed-link {
++						speed = <2500>;
++						full-duplex;
++						pause;
++					};
++				};
++			};
++		};
++	};
++};
++
++&bch {
++	status = "okay";
++};
++
++&snfi {
++	pinctrl-names = "default";
++	pinctrl-0 = <&serial_nand_pins>;
++	status = "okay";
++
++	flash@0 {
++		compatible = "spi-nand";
++		reg = <0>;
++		spi-tx-bus-width = <4>;
++		spi-rx-bus-width = <4>;
++		nand-ecc-engine = <&snfi>;
++		mediatek,bmt-v2;
++		mediatek,bmt-table-size = <0x1000>;
++		mediatek,bmt-remap-range = <0x0 0x8c0000>,
++					   <0x1bc0000 0x30c0000>;
++
++		partitions {
++			compatible = "fixed-partitions";
++			#address-cells = <1>;
++			#size-cells = <1>;
++
++			partition@0 {
++				label = "Preloader";
++				reg = <0x0 0x80000>;
++				read-only;
++			};
++
++			partition@80000 {
++				label = "ATF";
++				reg = <0x80000 0x40000>;
++				read-only;
++			};
++
++			partition@c0000 {
++				label = "u-boot";
++				reg = <0xc0000 0x80000>;
++				read-only;
++			};
++
++			partition@140000 {
++				label = "u-boot-env";
++				reg = <0x140000 0x80000>;
++				read-only;
++			};
++
++			factory: partition@1c0000 {
++				label = "factory";
++				reg = <0x1c0000 0x100000>;
++				read-only;
++
++				nvmem-layout {
++					compatible = "fixed-layout";
++					#address-cells = <1>;
++					#size-cells = <1>;
++
++					macaddr_factory_4: macaddr@4 {
++						compatible = "mac-base";
++						reg = <0x4 0x6>;
++						#nvmem-cell-cells = <1>;
++					};
++
++					macaddr_factory_7fff4: macaddr@7fff4 {
++						reg = <0x7fff4 0x6>;
++					};
++
++					macaddr_factory_7fffa: macaddr@7fffa {
++						reg = <0x7fffa 0x6>;
++					};
++				};
++			};
++
++			partition@2c0000 {
++				label = "kernel";
++				reg = <0x2c0000 0x600000>;
++			};
++
++			partition@8c0000 {
++				label = "ubi";
++				reg = <0x8c0000 0x1300000>;
++			};
++
++			partition@1bc0000 {
++				label = "tm_pattern";
++				reg = <0x1bc0000 0x500000>;
++				read-only;
++			};
++
++			partition@20c0000 {
++				label = "tm_key";
++				reg = <0x20c0000 0x100000>;
++				read-only;
++			};
++
++			partition@21c0000 {
++				label = "user_data";
++				reg = <0x21c0000 0xf00000>;
++				read-only;
++			};
++
++			partition@30c0000 {
++				label = "reserved";
++				reg = <0x30c0000 0x4f40000>;
++				read-only;
++			};
++		};
++	};
++};
++
++&pcie0 {
++	pinctrl-names = "default";
++	pinctrl-0 = <&pcie0_pins>;
++	status = "okay";
++};
++
++&slot0 {
++	status = "okay";
++
++	wifi@0,0 {
++		compatible = "mediatek,mt76";
++		reg = <0x0000 0 0 0 0>;
++		mediatek,mtd-eeprom = <&factory 0x5000>;
++		ieee80211-freq-limit = <5000000 6000000>;
++		nvmem-cells = <&macaddr_factory_4 1>;
++		nvmem-cell-names = "mac-address";
++	};
++};
++
++&pwm {
++	pinctrl-names = "default";
++	pinctrl-0 = <&pwm7_pins>;
++	status = "okay";
++};
++
++&pwrap {
++	pinctrl-names = "default";
++	pinctrl-0 = <&pmic_bus_pins>;
++	status = "okay";
++};
++
++&rtc {
++	status = "disabled";
++};
++
++&uart0 {
++	pinctrl-names = "default";
++	pinctrl-0 = <&uart0_pins>;
++	status = "okay";
++};
++
++&watchdog {
++	pinctrl-names = "default";
++	pinctrl-0 = <&watchdog_pins>;
++	status = "okay";
++};
++
++&wmac {
++	status = "okay";
++
++	mediatek,mtd-eeprom = <&factory 0x0>;
++};
+diff --git a/target/linux/mediatek/image/mt7622.mk b/target/linux/mediatek/image/mt7622.mk
+index e45c064046e..14d1330b362 100644
+--- a/target/linux/mediatek/image/mt7622.mk
++++ b/target/linux/mediatek/image/mt7622.mk
+@@ -213,10 +213,19 @@ define Device/elecom_wrc-2533gent
+ endef
+ TARGET_DEVICES += elecom_wrc-2533gent
+ 
+-define Device/elecom_wrc-x3200gst3
++define Device/elecom_wrc-g01
++  $(Device/elecom_wrc-gst)
++  DEVICE_MODEL := WRC-G01
++  DEVICE_DTS := mt7622-elecom-wrc-g01
++  IMAGE/factory.bin := append-kernel | pad-to $$(KERNEL_SIZE) | \
++	append-ubi | check-size | \
++	elecom-wrc-gs-factory WRC-G01 0.00 -N | \
++	append-string MT7622_ELECOM_WRC-G01
++endef
++TARGET_DEVICES += elecom_wrc-g01
++
++define Device/elecom_wrc-gst
+   DEVICE_VENDOR := ELECOM
+-  DEVICE_MODEL := WRC-X3200GST3
+-  DEVICE_DTS := mt7622-elecom-wrc-x3200gst3
+   DEVICE_DTS_DIR := ../dts
+   IMAGE_SIZE := 25600k
+   KERNEL_SIZE := 6144k
+@@ -224,12 +233,18 @@ define Device/elecom_wrc-x3200gst3
+   PAGESIZE := 2048
+   UBINIZE_OPTS := -E 5
+   IMAGES += factory.bin
++  IMAGE/sysupgrade.bin := sysupgrade-tar | append-metadata
++  DEVICE_PACKAGES := kmod-mt7915-firmware
++endef
++
++define Device/elecom_wrc-x3200gst3
++  $(Device/elecom_wrc-gst)
++  DEVICE_MODEL := WRC-X3200GST3
++  DEVICE_DTS := mt7622-elecom-wrc-x3200gst3
+   IMAGE/factory.bin := append-kernel | pad-to $$(KERNEL_SIZE) | \
+ 	append-ubi | check-size | \
+ 	elecom-wrc-gs-factory WRC-X3200GST3 0.00 -N | \
+ 	append-string MT7622_ELECOM_WRC-X3200GST3
+-  IMAGE/sysupgrade.bin := sysupgrade-tar | append-metadata
+-  DEVICE_PACKAGES := kmod-mt7915-firmware
+ endef
+ TARGET_DEVICES += elecom_wrc-x3200gst3
+ 
+diff --git a/target/linux/mediatek/mt7622/base-files/lib/upgrade/platform.sh b/target/linux/mediatek/mt7622/base-files/lib/upgrade/platform.sh
+index 841397d4ef8..471a8a127d8 100755
+--- a/target/linux/mediatek/mt7622/base-files/lib/upgrade/platform.sh
++++ b/target/linux/mediatek/mt7622/base-files/lib/upgrade/platform.sh
+@@ -20,6 +20,7 @@ platform_do_upgrade() {
+ 		;;
+ 	dlink,eagle-pro-ai-m32-a1|\
+ 	dlink,eagle-pro-ai-r32-a1|\
++	elecom,wrc-g01|\
+ 	elecom,wrc-x3200gst3|\
+ 	mediatek,mt7622-rfb1-ubi|\
+ 	netgear,wax206|\
+@@ -60,6 +61,7 @@ platform_check_image() {
+ 		;;
+ 	dlink,eagle-pro-ai-m32-a1|\
+ 	dlink,eagle-pro-ai-r32-a1|\
++	elecom,wrc-g01|\
+ 	elecom,wrc-x3200gst3|\
+ 	mediatek,mt7622-rfb1-ubi|\
+ 	netgear,wax206|\

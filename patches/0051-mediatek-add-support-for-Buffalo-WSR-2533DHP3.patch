@@ -1,0 +1,360 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Taiga Ogawa <zectaiga@gmail.com>
+Date: Sat, 23 May 2026 17:41:12 +0000
+Subject: [PATCH 51/76] mediatek: add support for Buffalo WSR-2533DHP3
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Buffalo WSR-2533DHP3 is a 2.4/5 GHz band 11ac router, based on
+MT7622B.
+
+Specification:
+
+- SoC         : MediaTek MT7622B
+- RAM         : DDR3 256 MiB
+- Flash       : SPI-NAND 128 MiB (Winbond W25N01GVZEIG)
+- WLAN        : 2.4/5 GHz 4T4R
+  - 2.4 GHz   : MediaTek MT7622B (SoC)
+  - 5 GHz     : MediaTek MT7615
+- Ethernet    : 5x 10/100/1000 Mbps
+  - Switch    : MediaTek MT7531
+- LEDs/Keys   : 6x/5x (2x: buttons, 3x: slide-switches)
+- UART        : through-hole on PCB (J4)
+  - assignment: 3.3V, GND, TX, RX from tri-angle marking
+  - settings  : 115200n8
+- Power       : 12 VDC, 1.5 A
+
+Flash instruction using factory.bin image:
+
+1. Boot WSR-2533DHP3 with "Router" mode
+2. Access to "http://192.168.11.1/" and open firmware update page
+   ("ファームウェア更新")
+3. Select the OpenWrt factory.bin image and click update ("更新実行")
+   button
+4. Wait ~120 seconds to complete flashing
+
+Note:
+
+- This device has 2x OS images on flash. The first one will always be
+  used for booting and the secondary is for backup.
+
+Tested:
+
+- initramfs boot
+- factory.bin installation from OEM WebUI
+- LAN port assignment
+- WAN DHCP
+- NAT routing
+- 2.4 GHz Wi-Fi
+- 5 GHz Wi-Fi
+- LEDs
+- Buttons
+
+MAC Addresses:
+
+LAN    : 58:27:8C:xx:xx:90 (board_data, mac (text))
+WAN    : 58:27:8C:xx:xx:90 (board_data, mac (text))
+2.4 GHz: 58:27:8C:xx:xx:91
+5 GHz  : 58:27:8C:xx:xx:94
+
+Signed-off-by: Taiga Ogawa <zectaiga@gmail.com>
+Link: https://github.com/openwrt/openwrt/pull/23497
+Signed-off-by: Hauke Mehrtens <hauke@hauke-m.de>
+---
+ .../uboot-envtools/files/mediatek_mt7622      |   3 +-
+ .../dts/mt7622-buffalo-wsr-2533dhp3.dts       | 172 ++++++++++++++++++
+ target/linux/mediatek/image/mt7622.mk         |  10 +
+ .../mt7622/base-files/etc/board.d/02_network  |   1 +
+ .../etc/hotplug.d/ieee80211/11_fix_wifi_mac   |   5 +
+ .../base-files/etc/uci-defaults/09_fix_crc    |   1 +
+ .../mt7622/base-files/lib/upgrade/buffalo.sh  |   1 +
+ .../mt7622/base-files/lib/upgrade/platform.sh |   2 +
+ 8 files changed, 194 insertions(+), 1 deletion(-)
+ create mode 100644 target/linux/mediatek/dts/mt7622-buffalo-wsr-2533dhp3.dts
+
+diff --git a/package/boot/uboot-tools/uboot-envtools/files/mediatek_mt7622 b/package/boot/uboot-tools/uboot-envtools/files/mediatek_mt7622
+index 51d620fdb04..805261bcdad 100644
+--- a/package/boot/uboot-tools/uboot-envtools/files/mediatek_mt7622
++++ b/package/boot/uboot-tools/uboot-envtools/files/mediatek_mt7622
+@@ -34,7 +34,8 @@ linksys,e8450-ubi)
+ 		;;
+ 	esac
+ 	;;
+-buffalo,wsr-2533dhp2)
++buffalo,wsr-2533dhp2|\
++buffalo,wsr-2533dhp3)
+ 	ubootenv_add_uci_config "/dev/mtd3" "0x0" "0x1000" "0x20000"
+ 	;;
+ dlink,eagle-pro-ai-m32-a1|\
+diff --git a/target/linux/mediatek/dts/mt7622-buffalo-wsr-2533dhp3.dts b/target/linux/mediatek/dts/mt7622-buffalo-wsr-2533dhp3.dts
+new file mode 100644
+index 00000000000..09cba0f4f87
+--- /dev/null
++++ b/target/linux/mediatek/dts/mt7622-buffalo-wsr-2533dhp3.dts
+@@ -0,0 +1,172 @@
++// SPDX-License-Identifier: GPL-2.0-or-later OR MIT
++/dts-v1/;
++
++#include <dt-bindings/pinctrl/mt65xx.h>
++
++#include "mt7622-buffalo-wsr.dtsi"
++
++/ {
++	model = "Buffalo WSR-2533DHP3";
++	compatible = "buffalo,wsr-2533dhp3", "mediatek,mt7622";
++
++	memory@40000000 {
++		reg = <0 0x40000000 0 0x0f000000>;
++		device_type = "memory";
++	};
++};
++
++&pio {
++	/* Serial NAND is shared pin with SPI-NOR */
++	serial_nand_pins: serial-nand-pins {
++		mux {
++			function = "flash";
++			groups = "snfi";
++		};
++
++		conf-cmd-dat {
++			pins = "SPI_WP", "SPI_HOLD", "SPI_MOSI",
++			       "SPI_MISO", "SPI_CS";
++			input-enable;
++			drive-strength = <MTK_DRIVE_16mA>;
++			bias-pull-up;
++		};
++
++		conf-clk {
++			pins = "SPI_CLK";
++			drive-strength = <MTK_DRIVE_16mA>;
++			bias-pull-down;
++		};
++	};
++};
++
++&mdio {
++	switch@1f {
++		compatible = "mediatek,mt7531";
++		reg = <31>;
++		reset-gpios = <&pio 54 GPIO_ACTIVE_HIGH>;
++
++		ports {
++			#address-cells = <1>;
++			#size-cells = <0>;
++
++			port@0 {
++				reg = <0>;
++				label = "lan4";
++			};
++
++			port@1 {
++				reg = <1>;
++				label = "lan3";
++			};
++
++			port@2 {
++				reg = <2>;
++				label = "lan2";
++			};
++
++			port@3 {
++				reg = <3>;
++				label = "lan1";
++			};
++
++			port@4 {
++				reg = <4>;
++				label = "wan";
++			};
++
++			port@6 {
++				reg = <6>;
++				label = "cpu";
++				ethernet = <&gmac0>;
++				phy-connection-type = "2500base-x";
++
++				fixed-link {
++					speed = <2500>;
++					full-duplex;
++					pause;
++				};
++			};
++		};
++	};
++};
++
++&snfi {
++	pinctrl-names = "default";
++	pinctrl-0 = <&serial_nand_pins>;
++	status = "okay";
++
++	flash@0 {
++		compatible = "spi-nand";
++		reg = <0>;
++		spi-max-frequency = <104000000>;
++		nand-ecc-engine = <&snfi>;
++		mediatek,bmt-v2;
++		mediatek,bmt-table-size = <0x1000>;
++		/*
++		 * - Preloader - (kernel (6MiB, in firmware))
++		 * - Kernel2 - board_data
++		 */
++		mediatek,bmt-remap-range = <0x0 0x800000>,
++					   <0x3400000 0x3600000>;
++
++		partitions {
++			compatible = "fixed-partitions";
++			#address-cells = <1>;
++			#size-cells = <1>;
++
++			partition@0 {
++				label = "Preloader";
++				reg = <0x0 0x80000>;
++				read-only;
++			};
++
++			partition@80000 {
++				label = "ATF";
++				reg = <0x80000 0x40000>;
++				read-only;
++			};
++
++			partition@c0000 {
++				label = "u-boot";
++				reg = <0xc0000 0x80000>;
++				read-only;
++			};
++
++			partition@140000 {
++				label = "u-boot-env";
++				reg = <0x140000 0x80000>;
++				read-only;
++			};
++
++			factory: partition@1c0000 {
++				label = "factory";
++				reg = <0x1c0000 0x40000>;
++				read-only;
++			};
++
++			partition@200000 {
++				compatible = "brcm,trx";
++				brcm,trx-magic = <0x33504844>;
++				label = "firmware";
++				reg = <0x200000 0x3200000>;
++			};
++
++			partition@3400000 {
++				label = "Kernel2";
++				reg = <0x3400000 0x3200000>;
++			};
++
++			partition@6600000 {
++				label = "glbcfg";
++				reg = <0x6600000 0x200000>;
++				read-only;
++			};
++
++			partition@6800000 {
++				label = "board_data";
++				reg = <0x6800000 0x200000>;
++				read-only;
++			};
++		};
++	};
++};
+diff --git a/target/linux/mediatek/image/mt7622.mk b/target/linux/mediatek/image/mt7622.mk
+index 14d1330b362..a16c4e856be 100644
+--- a/target/linux/mediatek/image/mt7622.mk
++++ b/target/linux/mediatek/image/mt7622.mk
+@@ -163,6 +163,16 @@ define Device/buffalo_wsr-2533dhp2
+ endef
+ TARGET_DEVICES += buffalo_wsr-2533dhp2
+ 
++define Device/buffalo_wsr-2533dhp3
++  $(Device/buffalo_wsr)
++  DEVICE_MODEL := WSR-2533DHP3
++  DEVICE_DTS := mt7622-buffalo-wsr-2533dhp3
++  IMAGE_SIZE := 51200k
++  BUFFALO_TRX_MAGIC := 0x33504844
++  DEVICE_PACKAGES := kmod-mt7615-firmware
++endef
++TARGET_DEVICES += buffalo_wsr-2533dhp3
++
+ define Device/buffalo_wsr-3200ax4s
+   $(Device/buffalo_wsr)
+   DEVICE_MODEL := WSR-3200AX4S
+diff --git a/target/linux/mediatek/mt7622/base-files/etc/board.d/02_network b/target/linux/mediatek/mt7622/base-files/etc/board.d/02_network
+index ff4ff0c480c..b83d03e6b98 100644
+--- a/target/linux/mediatek/mt7622/base-files/etc/board.d/02_network
++++ b/target/linux/mediatek/mt7622/base-files/etc/board.d/02_network
+@@ -54,6 +54,7 @@ mediatek_setup_macs()
+ 	local label_mac=""
+ 
+ 	case $board in
++	buffalo,wsr-2533dhp3|\
+ 	buffalo,wsr-3200ax4s)
+ 		lan_mac=$(mtd_get_mac_ascii board_data "mac")
+ 		wan_mac=$lan_mac
+diff --git a/target/linux/mediatek/mt7622/base-files/etc/hotplug.d/ieee80211/11_fix_wifi_mac b/target/linux/mediatek/mt7622/base-files/etc/hotplug.d/ieee80211/11_fix_wifi_mac
+index 7ee9f24071c..cf7ad823912 100644
+--- a/target/linux/mediatek/mt7622/base-files/etc/hotplug.d/ieee80211/11_fix_wifi_mac
++++ b/target/linux/mediatek/mt7622/base-files/etc/hotplug.d/ieee80211/11_fix_wifi_mac
+@@ -13,6 +13,11 @@ case "$board" in
+ 	bananapi,bpi-r64)
+ 		[ "$PHYNBR" = "0" ] && macaddr_add $(cat /sys/class/net/eth0/address) 2 > /sys${DEVPATH}/macaddress
+ 		;;
++	buffalo,wsr-2533dhp3)
++		basemac=$(mtd_get_mac_ascii board_data "mac")
++		[ "$PHYNBR" = "0" ] && macaddr_add $basemac 4 > /sys${DEVPATH}/macaddress
++		[ "$PHYNBR" = "1" ] && macaddr_add $basemac 1 > /sys${DEVPATH}/macaddress
++		;;
+ 	buffalo,wsr-3200ax4s)
+ 		basemac=$(mtd_get_mac_ascii board_data "mac")
+ 		[ "$PHYNBR" = "0" ] && macaddr_add $basemac 1 > /sys${DEVPATH}/macaddress
+diff --git a/target/linux/mediatek/mt7622/base-files/etc/uci-defaults/09_fix_crc b/target/linux/mediatek/mt7622/base-files/etc/uci-defaults/09_fix_crc
+index 25c8a0359ba..f8c7b7a01f6 100644
+--- a/target/linux/mediatek/mt7622/base-files/etc/uci-defaults/09_fix_crc
++++ b/target/linux/mediatek/mt7622/base-files/etc/uci-defaults/09_fix_crc
+@@ -16,6 +16,7 @@ case "$(board_name)" in
+ buffalo,wsr-2533dhp2)
+ 	fixup_trx_crc 0x44485032
+ 	;;
++buffalo,wsr-2533dhp3|\
+ buffalo,wsr-3200ax4s)
+ 	fixup_trx_crc 0x44485033
+ 	;;
+diff --git a/target/linux/mediatek/mt7622/base-files/lib/upgrade/buffalo.sh b/target/linux/mediatek/mt7622/base-files/lib/upgrade/buffalo.sh
+index fcfea36966d..267b10cb97a 100644
+--- a/target/linux/mediatek/mt7622/base-files/lib/upgrade/buffalo.sh
++++ b/target/linux/mediatek/mt7622/base-files/lib/upgrade/buffalo.sh
+@@ -53,6 +53,7 @@ case "$(board_name)" in
+ buffalo,wsr-2533dhp2)
+ 	BUFFALO_TRX_MAGIC="44485032" # "DHP2"
+ 	;;
++buffalo,wsr-2533dhp3|\
+ buffalo,wsr-3200ax4s)
+ 	BUFFALO_TRX_MAGIC="44485033" # "DHP3"
+ 	;;
+diff --git a/target/linux/mediatek/mt7622/base-files/lib/upgrade/platform.sh b/target/linux/mediatek/mt7622/base-files/lib/upgrade/platform.sh
+index 471a8a127d8..8674339f068 100755
+--- a/target/linux/mediatek/mt7622/base-files/lib/upgrade/platform.sh
++++ b/target/linux/mediatek/mt7622/base-files/lib/upgrade/platform.sh
+@@ -15,6 +15,7 @@ platform_do_upgrade() {
+ 		fit_do_upgrade "$1"
+ 		;;
+ 	buffalo,wsr-2533dhp2|\
++	buffalo,wsr-2533dhp3|\
+ 	buffalo,wsr-3200ax4s)
+ 		buffalo_do_upgrade "$1"
+ 		;;
+@@ -56,6 +57,7 @@ platform_check_image() {
+ 
+ 	case "$board" in
+ 	buffalo,wsr-2533dhp2|\
++	buffalo,wsr-2533dhp3|\
+ 	buffalo,wsr-3200ax4s)
+ 		buffalo_check_image "$board" "$magic" "$1" || return 1
+ 		;;

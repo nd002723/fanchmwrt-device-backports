@@ -1,0 +1,619 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Richard Jones <richard@netsolution.shop>
+Date: Wed, 8 Apr 2026 19:23:53 +0000
+Subject: [PATCH 47/76] mediatek: filogic: add support for AlwayLink M01K43
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Add support for the AlwayLink M01K43 5G CPE router.
+
+Hardware specifications:
+- SoC:       MediaTek MT7981B (Filogic 820), dual-core Cortex-A53
+- RAM:       256 MiB DDR3 (0x40000000, size 0x10000000)
+- Flash:     128 MiB SPI-NAND (UBI, root) + 4 MiB SPI-NOR (bootloader)
+- Ethernet:  4x 1 GbE LAN + 1x 2.5 GbE WAN
+             (MT7531 DSA switch; WAN via RTL8221B 2.5GbE PHY on MAC1)
+- WiFi:      MT7981 built-in 2x2 802.11ax (2.4 GHz + 5 GHz)
+- USB:       1x xHCI (USB 2.0 only; USB 3.0 PHY pins not routed)
+- Modem:     M.2 B-Key slot wired for USB (tested: Quectel RM551E-GL,
+             Quectel RM520N-GL via QMI)
+- LEDs:      10x GPIO LEDs (status, WAN, LAN, WiFi 2.4/5, signal bars)
+- Buttons:   WPS, Reset, RFKill
+- Power:     12 V DC barrel jack
+- UART:      3.3 V TTL header on PCB, 115200 8N1, no flow control
+
+PCB silkscreen: M01K43 v5.0
+Manufacturer:   Shenzhen AlwayLink Wireless Technology Co., Ltd.
+
+MAC addresses come from the 'ledeinfo' partition (mtd6) at offset 0x18
+(label macaddr_ledeinfo_18); the stored value is the LAN MAC.
+
+  interface            this port    vendor firmware
+  -------------------  -----------  --------------------------
+  eth0 / LAN bridge    base + 0     base + 0
+  eth1 / WAN           base + 1     base + 1
+  wifi 2.4 GHz band@0  base + 2     base (driver-derived)
+  wifi 5 GHz   band@1  base + 3     base + LAA bit (driver)
+
+The vendor's ethernet scheme (LAN = base, WAN = base + 1) is reproduced
+exactly. For WiFi the vendor's proprietary mt_wifi driver ignores the
+stored per-radio MAC and derives each BSSID from the base by setting the
+locally-administered bit, so the radios are not given clean unicast
+offsets. Under mainline mt76 + DSA, reusing the base (LAN) MAC on a radio
+collides at L2 with the gmac0 conduit, so this port assigns the 2.4 GHz
+and 5 GHz radios base + 2 and base + 3 — unique unicast addresses in the
+same OUI block.
+
+Installation
+------------
+
+Stock firmware defaults (verified on shipping units):
+  LAN IP:   192.168.100.1
+  SSH/web:  user 'root', password 'admin'
+  Serial:   3.3 V TTL UART header on PCB, 115200 8N1, no flow control
+
+Image artifacts produced by this device definition:
+  openwrt-mediatek-filogic-alwaylink_m01k43-squashfs-factory.bin
+  openwrt-mediatek-filogic-alwaylink_m01k43-squashfs-sysupgrade.bin
+
+Before flashing, back up the per-unit partitions (cannot be
+regenerated):
+
+  ssh root@192.168.100.1
+  dd if=/dev/mtd3 of=/tmp/factory.bin bs=1 count=655360
+  dd if=/dev/mtd6 of=/tmp/ledeinfo.bin bs=1 count=65536
+  exit
+  scp root@192.168.100.1:/tmp/factory.bin  .
+  scp root@192.168.100.1:/tmp/ledeinfo.bin .
+
+Method 1 - From an existing OpenWrt install (sysupgrade):
+
+  IMG=openwrt-mediatek-filogic-alwaylink_m01k43-squashfs-sysupgrade.bin
+  scp "$IMG" root@192.168.1.1:/tmp/sysupgrade.bin
+  ssh root@192.168.1.1 sysupgrade -n /tmp/sysupgrade.bin
+
+Method 2 - U-Boot serial recovery via TFTP (requires 3.3 V USB-UART
+adapter):
+
+  1. Attach 3.3 V USB-UART (TX, RX, GND) to the PCB header. Open a
+     terminal at 115200 8N1, no flow control.
+  2. Configure a TFTP server on the host PC at IP 192.168.2.88.
+     Place the factory image in the TFTP root, renamed if desired.
+  3. Power on the router. The BL2/U-Boot banner prints within ~1
+     second; press any key during the autoboot countdown to enter
+     the U-Boot menu.
+  4. From the menu, select 'Upgrade ubi'. U-Boot's default IP is
+     192.168.2.1 and it expects the TFTP server at 192.168.2.88.
+     Provide the factory image filename when prompted.
+  5. Wait for the write to complete; U-Boot reboots into OpenWrt.
+
+Method 3 - From a NAND programmer (brick-recovery path):
+
+  1. Clip onto or desolder the SPI-NAND chip and dump the full
+     128 MiB with a programmer (e.g. RT809H, CH341A with NAND
+     adapter). Keep the dump as a recovery image.
+  2. Using the same programmer, write the factory.bin image to
+     the UBI region of the NAND. The SPI-NOR (BL2/u-boot-env/
+     Factory/FIP/woem/ledeinfo/nvram) must NOT be erased - those
+     partitions are per-unit and live on the separate 4 MiB NOR.
+  3. Reseat the chip and power on. The bootloader on NOR will
+     load the new kernel and rootfs from UBI.
+
+Signed-off-by: Richard Jones <richard@netsolution.shop>
+Link: https://github.com/openwrt/openwrt/pull/22818
+Signed-off-by: Hauke Mehrtens <hauke@hauke-m.de>
+---
+ .../uboot-envtools/files/mediatek_filogic     |   3 +-
+ .../mediatek/dts/mt7981b-alwaylink-m01k43.dts | 442 ++++++++++++++++++
+ .../filogic/base-files/etc/board.d/01_leds    |   3 +
+ target/linux/mediatek/image/filogic.mk        |  19 +
+ 4 files changed, 466 insertions(+), 1 deletion(-)
+ create mode 100644 target/linux/mediatek/dts/mt7981b-alwaylink-m01k43.dts
+
+diff --git a/package/boot/uboot-tools/uboot-envtools/files/mediatek_filogic b/package/boot/uboot-tools/uboot-envtools/files/mediatek_filogic
+index e4b1f9a7c13..f74c6ea4ab8 100644
+--- a/package/boot/uboot-tools/uboot-envtools/files/mediatek_filogic
++++ b/package/boot/uboot-tools/uboot-envtools/files/mediatek_filogic
+@@ -149,7 +149,8 @@ smartrg,sdg-8733a|\
+ smartrg,sdg-8734)
+ 	ubootenv_add_mmc "u-boot-env" "mmcblk0" "0x0" "0x8000" "0x8000"
+ 	;;
+-teltonika,rutc50)
++teltonika,rutc50|\
++alwaylink,m01k43)
+ 	ubootenv_add_mtd "u-boot-env" "0x0" "0x10000" "0x10000"
+ 	;;
+ tplink,archer-ax80-v1|\
+diff --git a/target/linux/mediatek/dts/mt7981b-alwaylink-m01k43.dts b/target/linux/mediatek/dts/mt7981b-alwaylink-m01k43.dts
+new file mode 100644
+index 00000000000..42df9fe7aa0
+--- /dev/null
++++ b/target/linux/mediatek/dts/mt7981b-alwaylink-m01k43.dts
+@@ -0,0 +1,442 @@
++// SPDX-License-Identifier: GPL-2.0-or-later OR MIT
++
++/dts-v1/;
++
++#include <dt-bindings/gpio/gpio.h>
++#include <dt-bindings/input/input.h>
++#include <dt-bindings/leds/common.h>
++#include <dt-bindings/pinctrl/mt65xx.h>
++
++#include "mt7981b.dtsi"
++
++/ {
++	model = "AlwayLink M01K43";
++	compatible = "alwaylink,m01k43", "mediatek,mt7981";
++
++	aliases {
++		serial0 = &uart0;
++		label-mac-device = &gmac0;
++		led-boot = &led_wan;
++		led-failsafe = &led_status_red;
++		led-running = &led_status_blue;
++		led-upgrade = &led_status_blue;
++	};
++
++	chosen {
++		stdout-path = "serial0:115200n8";
++	};
++
++	memory@40000000 {
++		reg = <0 0x40000000 0 0x10000000>;
++		device_type = "memory";
++	};
++
++	gpio-keys {
++		compatible = "gpio-keys";
++
++		button-wps {
++			label = "wps";
++			linux,code = <KEY_WPS_BUTTON>;
++			gpios = <&pio 0 GPIO_ACTIVE_LOW>;
++			debounce-interval = <20>;
++		};
++
++		button-reset {
++			label = "reset";
++			linux,code = <KEY_RESTART>;
++			gpios = <&pio 1 GPIO_ACTIVE_LOW>;
++			debounce-interval = <20>;
++		};
++
++		button-rfkill {
++			label = "rfkill";
++			linux,code = <KEY_RFKILL>;
++			gpios = <&pio 7 GPIO_ACTIVE_LOW>;
++			debounce-interval = <20>;
++		};
++	};
++
++	leds {
++		compatible = "gpio-leds";
++
++		led_wan: led-wan {
++			color = <LED_COLOR_ID_BLUE>;
++			function = LED_FUNCTION_WAN;
++			gpios = <&pio 8 GPIO_ACTIVE_LOW>;
++		};
++
++		led-lan2 {
++			color = <LED_COLOR_ID_BLUE>;
++			function = LED_FUNCTION_LAN;
++			function-enumerator = <2>;
++			gpios = <&pio 4 GPIO_ACTIVE_LOW>;
++		};
++
++		led-lan3 {
++			color = <LED_COLOR_ID_BLUE>;
++			function = LED_FUNCTION_LAN;
++			function-enumerator = <3>;
++			gpios = <&pio 22 GPIO_ACTIVE_LOW>;
++		};
++
++		led_status_blue: led-status-blue {
++			color = <LED_COLOR_ID_BLUE>;
++			function = LED_FUNCTION_STATUS;
++			gpios = <&pio 5 GPIO_ACTIVE_HIGH>;
++		};
++
++		led_status_red: led-status-red {
++			color = <LED_COLOR_ID_RED>;
++			function = LED_FUNCTION_STATUS;
++			function-enumerator = <1>;
++			gpios = <&pio 6 GPIO_ACTIVE_HIGH>;
++		};
++
++		led-wifi {
++			color = <LED_COLOR_ID_BLUE>;
++			function = LED_FUNCTION_WLAN;
++			gpios = <&pio 9 GPIO_ACTIVE_HIGH>;
++			linux,default-trigger = "phy0tpt";
++		};
++
++		led-signal-4g-yellow {
++			color = <LED_COLOR_ID_YELLOW>;
++			function = LED_FUNCTION_INDICATOR;
++			function-enumerator = <0>;
++			gpios = <&pio 10 GPIO_ACTIVE_HIGH>;
++		};
++
++		led-signal-5g-blue {
++			color = <LED_COLOR_ID_BLUE>;
++			function = LED_FUNCTION_INDICATOR;
++			function-enumerator = <1>;
++			gpios = <&pio 11 GPIO_ACTIVE_HIGH>;
++		};
++
++		led-signal-5g-yellow {
++			color = <LED_COLOR_ID_YELLOW>;
++			function = LED_FUNCTION_INDICATOR;
++			function-enumerator = <2>;
++			gpios = <&pio 12 GPIO_ACTIVE_HIGH>;
++		};
++
++		led-signal-4g-blue {
++			color = <LED_COLOR_ID_BLUE>;
++			function = LED_FUNCTION_INDICATOR;
++			function-enumerator = <3>;
++			gpios = <&pio 13 GPIO_ACTIVE_HIGH>;
++		};
++	};
++};
++
++&eth {
++	status = "okay";
++
++	gmac0: mac@0 {
++		compatible = "mediatek,eth-mac";
++		reg = <0>;
++		phy-mode = "2500base-x";
++		nvmem-cells = <&macaddr_ledeinfo_18 0>;
++		nvmem-cell-names = "mac-address";
++
++		fixed-link {
++			speed = <2500>;
++			full-duplex;
++			pause;
++		};
++	};
++
++	gmac1: mac@1 {
++		compatible = "mediatek,eth-mac";
++		reg = <1>;
++		phy-mode = "gmii";
++		phy-handle = <&int_gbe_phy>;
++	};
++};
++
++&mdio_bus {
++	rtl8221b_phy: ethernet-phy@6 {
++		compatible = "ethernet-phy-ieee802.3-c45";
++		reg = <6>;
++	};
++
++	switch: switch@1f {
++		compatible = "mediatek,mt7531";
++		reg = <31>;
++		reset-gpios = <&pio 39 GPIO_ACTIVE_HIGH>;
++		interrupt-controller;
++		#interrupt-cells = <1>;
++		interrupt-parent = <&pio>;
++		interrupts = <38 IRQ_TYPE_LEVEL_HIGH>;
++
++		ports {
++			#address-cells = <1>;
++			#size-cells = <0>;
++
++			port@0 {
++				reg = <0>;
++				label = "lan1";
++				phy-handle = <&swphy0>;
++			};
++
++			port@1 {
++				reg = <1>;
++				label = "lan2";
++				phy-handle = <&swphy1>;
++			};
++
++			port@2 {
++				reg = <2>;
++				label = "lan3";
++				phy-handle = <&swphy2>;
++			};
++
++			port@3 {
++				reg = <3>;
++				label = "lan4";
++				phy-handle = <&swphy3>;
++			};
++
++			port@5 {
++				reg = <5>;
++				label = "wan";
++				nvmem-cells = <&macaddr_ledeinfo_18 1>;
++				nvmem-cell-names = "mac-address";
++				phy-mode = "2500base-x";
++				phy-handle = <&rtl8221b_phy>;
++			};
++
++			port@6 {
++				reg = <6>;
++				label = "cpu";
++				ethernet = <&gmac0>;
++				phy-mode = "2500base-x";
++
++				fixed-link {
++					speed = <2500>;
++					full-duplex;
++					pause;
++				};
++			};
++		};
++
++		mdio {
++			#address-cells = <1>;
++			#size-cells = <0>;
++
++			swphy0: phy@0 {
++				reg = <0>;
++			};
++
++			swphy1: phy@1 {
++				reg = <1>;
++			};
++
++			swphy2: phy@2 {
++				reg = <2>;
++			};
++
++			swphy3: phy@3 {
++				reg = <3>;
++			};
++
++		};
++	};
++};
++
++&spi0 {
++	pinctrl-names = "default";
++	pinctrl-0 = <&spi0_flash_pins>;
++	status = "okay";
++
++	spi_nand@0 {
++		compatible = "spi-nand";
++		reg = <0>;
++
++		spi-max-frequency = <52000000>;
++		spi-tx-bus-width = <4>;
++		spi-rx-bus-width = <4>;
++
++		mediatek,nmbm;
++		mediatek,bmt-max-ratio = <1>;
++		mediatek,bmt-max-reserved-blocks = <64>;
++
++		partitions {
++			compatible = "fixed-partitions";
++			#address-cells = <1>;
++			#size-cells = <1>;
++
++			partition@0 {
++				label = "ubi";
++				reg = <0x0000000 0x3800000>;
++			};
++
++			partition@3800000 {
++				label = "ubi2";
++				reg = <0x3800000 0x3800000>;
++			};
++		};
++	};
++};
++
++&spi2 {
++	pinctrl-names = "default";
++	pinctrl-0 = <&spi2_flash_pins>;
++	status = "okay";
++
++	flash@0 {
++		compatible = "jedec,spi-nor";
++		reg = <0>;
++
++		spi-max-frequency = <52000000>;
++		spi-tx-bus-width = <4>;
++		spi-rx-bus-width = <4>;
++
++		partitions {
++			compatible = "fixed-partitions";
++			#address-cells = <1>;
++			#size-cells = <1>;
++
++			partition@0 {
++				label = "bl2";
++				reg = <0x000000 0x040000>;
++				read-only;
++			};
++
++			partition@40000 {
++				label = "u-boot-env";
++				reg = <0x040000 0x010000>;
++			};
++
++			factory: partition@50000 {
++				label = "factory";
++				reg = <0x050000 0x0b0000>;
++				read-only;
++
++				nvmem-layout {
++					compatible = "fixed-layout";
++					#address-cells = <1>;
++					#size-cells = <1>;
++
++					/* WiFi EEPROM at offset 0x0, size 0x5000 */
++					eeprom_factory: eeprom@0 {
++						reg = <0x0 0x5000>;
++					};
++				};
++			};
++
++			partition@100000 {
++				label = "fip";
++				reg = <0x100000 0x200000>;
++				read-only;
++			};
++
++			partition@300000 {
++				label = "woem";
++				reg = <0x300000 0x010000>;
++			};
++
++			partition@310000 {
++				label = "ledeinfo";
++				reg = <0x310000 0x010000>;
++				read-only;
++
++				nvmem-layout {
++					compatible = "fixed-layout";
++					#address-cells = <1>;
++					#size-cells = <1>;
++
++					macaddr_ledeinfo_18: macaddr@18 {
++						compatible = "mac-base";
++						reg = <0x18 0x6>;
++						#nvmem-cell-cells = <1>;
++					};
++				};
++			};
++
++			partition@320000 {
++				label = "nvram";
++				reg = <0x320000 0x010000>;
++			};
++		};
++	};
++};
++
++&pio {
++	spi0_flash_pins: spi0-pins {
++		mux {
++			function = "spi";
++			groups = "spi0", "spi0_wp_hold";
++		};
++
++		conf-pu {
++			pins = "SPI0_CS", "SPI0_HOLD", "SPI0_WP";
++			drive-strength = <MTK_DRIVE_8mA>;
++			bias-pull-up = <MTK_PUPD_SET_R1R0_11>;
++		};
++
++		conf-pd {
++			pins = "SPI0_CLK", "SPI0_MOSI", "SPI0_MISO";
++			drive-strength = <MTK_DRIVE_8mA>;
++			bias-pull-down = <MTK_PUPD_SET_R1R0_11>;
++		};
++	};
++
++	spi2_flash_pins: spi2-pins {
++		mux {
++			function = "spi";
++			groups = "spi2", "spi2_wp_hold";
++		};
++
++		conf-pu {
++			pins = "SPI2_CS", "SPI2_HOLD", "SPI2_WP";
++			drive-strength = <MTK_DRIVE_8mA>;
++			bias-pull-up = <MTK_PUPD_SET_R1R0_11>;
++		};
++
++		conf-pd {
++			pins = "SPI2_CLK", "SPI2_MOSI", "SPI2_MISO";
++			drive-strength = <MTK_DRIVE_8mA>;
++			bias-pull-down = <MTK_PUPD_SET_R1R0_11>;
++		};
++	};
++};
++
++&uart0 {
++	status = "okay";
++};
++
++&watchdog {
++	status = "okay";
++};
++
++&usb_phy {
++	status = "okay";
++};
++
++&xhci {
++	phys = <&u2port0 PHY_TYPE_USB2>;
++	mediatek,u3p-dis-msk = <0x01>;
++	status = "okay";
++};
++
++&wifi {
++	#address-cells = <1>;
++	#size-cells = <0>;
++	status = "okay";
++	nvmem-cells = <&eeprom_factory>;
++	nvmem-cell-names = "eeprom";
++
++	band@0 {
++		reg = <0>;
++		nvmem-cells = <&macaddr_ledeinfo_18 2>;
++		nvmem-cell-names = "mac-address";
++	};
++
++	band@1 {
++		reg = <1>;
++		nvmem-cells = <&macaddr_ledeinfo_18 3>;
++		nvmem-cell-names = "mac-address";
++	};
++};
++
+diff --git a/target/linux/mediatek/filogic/base-files/etc/board.d/01_leds b/target/linux/mediatek/filogic/base-files/etc/board.d/01_leds
+index 389080ddba8..f0d5dbedd50 100644
+--- a/target/linux/mediatek/filogic/base-files/etc/board.d/01_leds
++++ b/target/linux/mediatek/filogic/base-files/etc/board.d/01_leds
+@@ -24,6 +24,9 @@ acer,predator-w6x-stock|\
+ acer,predator-w6x-ubootmod)
+ 	ucidef_set_led_netdev "wan" "wan" "rgb:status" "eth1"
+ 	;;
++alwaylink,m01k43)
++	ucidef_set_led_netdev "wan" "WAN" "blue:wan" "wan"
++	;;
+ asus,rt-ax52|\
+ asus,rt-ax57m|\
+ snr,snr-cpe-ax2)
+diff --git a/target/linux/mediatek/image/filogic.mk b/target/linux/mediatek/image/filogic.mk
+index c89d364b507..0096093f996 100644
+--- a/target/linux/mediatek/image/filogic.mk
++++ b/target/linux/mediatek/image/filogic.mk
+@@ -274,6 +274,25 @@ define Device/acer_vero-w6m
+ endef
+ TARGET_DEVICES += acer_vero-w6m
+ 
++define Device/alwaylink_m01k43
++  DEVICE_VENDOR := AlwayLink
++  DEVICE_MODEL := M01K43
++  DEVICE_DTS := mt7981b-alwaylink-m01k43
++  DEVICE_DTS_DIR := ../dts
++  DEVICE_PACKAGES := kmod-mt7915e kmod-mt7981-firmware mt7981-wo-firmware \
++    kmod-usb3 kmod-usb-serial-option kmod-usb-net-qmi-wwan uqmi \
++    kmod-phy-realtek uboot-envtools
++  KERNEL_IN_UBI := 1
++  UBINIZE_OPTS := -E 5
++  BLOCKSIZE := 128k
++  PAGESIZE := 2048
++  IMAGE_SIZE := 57344k
++  IMAGES += factory.bin
++  IMAGE/factory.bin := append-ubi | check-size $$$$(IMAGE_SIZE)
++  IMAGE/sysupgrade.bin := sysupgrade-tar | append-metadata
++endef
++TARGET_DEVICES += alwaylink_m01k43
++
+ define Device/asiarf_ap7986-003
+   DEVICE_VENDOR := AsiaRF
+   DEVICE_MODEL := AP7986 003

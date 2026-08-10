@@ -1,0 +1,560 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Michael Lotz <mmlr@mlotz.ch>
+Date: Fri, 23 Jan 2026 15:38:50 +0100
+Subject: [PATCH 12/76] qualcommax: ipq60xx: add Netgear RBx350 support
+
+Netgear RBx350 are dual band 4 stream 802.11ax mesh devices from the Orbi
+series. The RBR350 is a router with a WAN and 3 LAN ports. The RBS350 is a
+satellite without WAN port, only 2 LAN ports and half the flash. The
+hardware is otherwise identical. They were sold in kits as RBK352, RBK353,
+RBK354 or RBK355, with one router and 1-4 satellites.
+
+Hardware:
+* SoC: Qualcomm IPQ6018
+* RAM: 512MiB 1x Nanya NT5CC256M16ER-EK
+* Flash: 512MiB Winbond W29N04GZ or 256MiB Winbond W29N02GZ
+* WLAN 2.4GHz: QCN5022 2x2:2 b/g/n/ax
+* WLAN 5GHz: QCN5052 2x2:2 a/n/ac/ax
+* Ethernet: QCA8075 switch with 1 WAN and 3 LAN ports or 2 LAN ports
+* Serial Config: 3.3V TTL 115200-8-N-1, internal populated header
+* Serial Layout: 3.3V (don't connect, marked with dot) RX TX GND
+* LEDs: green/red power, white/red/green/blue status
+* Buttons: 1x Reset, 1x WPS
+
+MAC addresses:
+* LAN1: base address on label, stored in boarddata partition at 0x8
+* LAN2: base + 1
+* LAN3: base + 2
+* WAN: base + 3
+* 2.4GHz WLAN: base + 1
+* 5GHz WLAN: base + 2
+
+Flashing Notes:
+The stock firmware images are signed. Both the bootloader and the stock
+web interface check the signature and will fail to boot/flash.
+The bootloader automatically does NMRP when a gigabit LAN connection is
+present. The stock and factory images contain a U-Boot script that is
+executed when flashing using NMRP. This is used to alter and persist the
+U-Boot env with a boot command that works with unsigned firmware.
+
+Install OpenWrt:
+* Get the nmrpflash utility [0] and OpenWrt factory image
+* Find network interface to use: nmrpflash -L
+* Start nmrpflash: nmrpflash -i interface -f openwrt-...-factory.img
+* Connect the device LAN port closest to the power jack to the same
+  network using gigabit
+* Plug the device in and wait for the bootloader to flash
+* Unplug and replug the device once the power LED blinks amber
+
+Revert to Stock:
+The boot command needs to be reverted before flashing the stock firmware,
+otherwise it will fail to boot and get stuck in recovery mode (red power
+LED flashing).
+
+* Run: fw_setenv bootcmd bootipq
+* Restart the device
+* Flash the stock firmware RBx350-Va.b.c.d.img using nmrpflash
+
+[0]: https://github.com/jclehner/nmrpflash
+
+Signed-off-by: Michael Lotz <mmlr@mlotz.ch>
+Link: https://github.com/openwrt/openwrt/pull/21656
+Signed-off-by: Robert Marko <robimarko@gmail.com>
+---
+ .../uboot-envtools/files/qualcommax_ipq60xx   |   2 +
+ package/firmware/ipq-wifi/Makefile            |   2 +
+ .../arm64/boot/dts/qcom/ipq6018-rbr350.dts    |  10 +
+ .../arm64/boot/dts/qcom/ipq6018-rbs350.dts    |  18 ++
+ .../arm64/boot/dts/qcom/ipq6018-rbx350.dtsi   | 281 ++++++++++++++++++
+ target/linux/qualcommax/image/ipq60xx.mk      |  36 +++
+ .../image/netgear_rbx350.bootscript           |   7 +
+ .../ipq60xx/base-files/etc/board.d/02_network |   4 +-
+ .../etc/hotplug.d/firmware/11-ath11k-caldata  |   8 +
+ .../base-files/lib/upgrade/platform.sh        |   2 +
+ 10 files changed, 369 insertions(+), 1 deletion(-)
+ create mode 100644 target/linux/qualcommax/files/arch/arm64/boot/dts/qcom/ipq6018-rbr350.dts
+ create mode 100644 target/linux/qualcommax/files/arch/arm64/boot/dts/qcom/ipq6018-rbs350.dts
+ create mode 100644 target/linux/qualcommax/files/arch/arm64/boot/dts/qcom/ipq6018-rbx350.dtsi
+ create mode 100644 target/linux/qualcommax/image/netgear_rbx350.bootscript
+
+diff --git a/package/boot/uboot-tools/uboot-envtools/files/qualcommax_ipq60xx b/package/boot/uboot-tools/uboot-envtools/files/qualcommax_ipq60xx
+index f56c75b0f16..14e8950feb9 100644
+--- a/package/boot/uboot-tools/uboot-envtools/files/qualcommax_ipq60xx
++++ b/package/boot/uboot-tools/uboot-envtools/files/qualcommax_ipq60xx
+@@ -19,6 +19,8 @@ linksys,mr7350|\
+ linksys,mr7500)
+ 	ubootenv_add_mtd "u_env" "0x0" "0x40000" "0x20000"
+ 	;;
++netgear,rbr350|\
++netgear,rbs350|\
+ netgear,wax214|\
+ netgear,wax610|\
+ netgear,wax610y|\
+diff --git a/package/firmware/ipq-wifi/Makefile b/package/firmware/ipq-wifi/Makefile
+index fb594364a33..16b96e71fab 100644
+--- a/package/firmware/ipq-wifi/Makefile
++++ b/package/firmware/ipq-wifi/Makefile
+@@ -68,6 +68,7 @@ ALLWIFIBOARDS:= \
+ 	netgear_rax120v2 \
+ 	netgear_rbk20 \
+ 	netgear_rbk40 \
++	netgear_rbk350 \
+ 	netgear_rbk750 \
+ 	netgear_sxk80 \
+ 	netgear_wax214 \
+@@ -257,6 +258,7 @@ $(eval $(call generate-ipq-wifi-package,netgear_lbr20,Netgear LBR20))
+ $(eval $(call generate-ipq-wifi-package,netgear_rax120v2,Netgear RAX120v2))
+ $(eval $(call generate-ipq-wifi-package,netgear_rbk20,Netgear RBK20))
+ $(eval $(call generate-ipq-wifi-package,netgear_rbk40,Netgear RBK40))
++$(eval $(call generate-ipq-wifi-package,netgear_rbk350,Netgear RBK350))
+ $(eval $(call generate-ipq-wifi-package,netgear_rbk750,Netgear RBK750))
+ $(eval $(call generate-ipq-wifi-package,netgear_sxk80,Netgear SXK80))
+ $(eval $(call generate-ipq-wifi-package,netgear_wax214,Netgear WAX214))
+diff --git a/target/linux/qualcommax/files/arch/arm64/boot/dts/qcom/ipq6018-rbr350.dts b/target/linux/qualcommax/files/arch/arm64/boot/dts/qcom/ipq6018-rbr350.dts
+new file mode 100644
+index 00000000000..ee671d9c582
+--- /dev/null
++++ b/target/linux/qualcommax/files/arch/arm64/boot/dts/qcom/ipq6018-rbr350.dts
+@@ -0,0 +1,10 @@
++// SPDX-License-Identifier: (GPL-2.0+)
++
++/dts-v1/;
++
++#include "ipq6018-rbx350.dtsi"
++
++/ {
++	model = "Netgear RBR350";
++	compatible = "netgear,rbr350", "qcom,ipq6018";
++};
+diff --git a/target/linux/qualcommax/files/arch/arm64/boot/dts/qcom/ipq6018-rbs350.dts b/target/linux/qualcommax/files/arch/arm64/boot/dts/qcom/ipq6018-rbs350.dts
+new file mode 100644
+index 00000000000..3b3090cdc22
+--- /dev/null
++++ b/target/linux/qualcommax/files/arch/arm64/boot/dts/qcom/ipq6018-rbs350.dts
+@@ -0,0 +1,18 @@
++// SPDX-License-Identifier: (GPL-2.0+)
++
++/dts-v1/;
++
++#include "ipq6018-rbx350.dtsi"
++
++/ {
++	model = "Netgear RBS350";
++	compatible = "netgear,rbs350", "qcom,ipq6018";
++};
++
++&dp2 {
++	status = "disabled";
++};
++
++&dp3 {
++	status = "disabled";
++};
+diff --git a/target/linux/qualcommax/files/arch/arm64/boot/dts/qcom/ipq6018-rbx350.dtsi b/target/linux/qualcommax/files/arch/arm64/boot/dts/qcom/ipq6018-rbx350.dtsi
+new file mode 100644
+index 00000000000..2b111736186
+--- /dev/null
++++ b/target/linux/qualcommax/files/arch/arm64/boot/dts/qcom/ipq6018-rbx350.dtsi
+@@ -0,0 +1,281 @@
++#include "ipq6018-512m.dtsi"
++#include "ipq6018-cp-cpu.dtsi"
++#include "ipq6018-ess.dtsi"
++#include <dt-bindings/gpio/gpio.h>
++#include <dt-bindings/input/input.h>
++#include <dt-bindings/leds/common.h>
++
++/ {
++	aliases {
++		led-boot = &led_status_white;
++		led-failsafe = &led_status_red;
++		led-upgrade = &led_status_blue;
++		serial0 = &blsp1_uart3;
++		label-mac-device = &dp5;
++	};
++
++
++	chosen {
++		stdout-path = "serial0:115200n8";
++		bootargs-append = " ubi.mtd=rootfs root=/dev/ubiblock0_1";
++	};
++
++	keys {
++		compatible = "gpio-keys";
++
++		reset {
++			label = "reset";
++			gpios = <&tlmm 19 GPIO_ACTIVE_LOW>;
++			linux,code = <KEY_RESTART>;
++			debounce-interval = <60>;
++		};
++
++		wps {
++			label = "wps";
++			gpios = <&tlmm 57 GPIO_ACTIVE_LOW>;
++			linux,code = <KEY_WPS_BUTTON>;
++			debounce-interval = <60>;
++		};
++	};
++
++	leds {
++		compatible = "gpio-leds";
++
++		power_green {
++			function = LED_FUNCTION_POWER;
++			color = <LED_COLOR_ID_GREEN>;
++			gpios = <&tlmm 34 GPIO_ACTIVE_LOW>;
++			default-state = "on";
++		};
++
++		power_red {
++			function = LED_FUNCTION_FAULT;
++			color = <LED_COLOR_ID_RED>;
++			gpios = <&tlmm 35 GPIO_ACTIVE_LOW>;
++		};
++
++		led_status_white: status_white {
++			function = LED_FUNCTION_STATUS;
++			color = <LED_COLOR_ID_WHITE>;
++			gpios = <&tlmm 37 GPIO_ACTIVE_LOW>;
++		};
++
++		status_green {
++			function = LED_FUNCTION_STATUS;
++			color = <LED_COLOR_ID_GREEN>;
++			gpios = <&tlmm 76 GPIO_ACTIVE_LOW>;
++		};
++
++		led_status_red: status_red {
++			function = LED_FUNCTION_STATUS;
++			color = <LED_COLOR_ID_RED>;
++			gpios = <&tlmm 77 GPIO_ACTIVE_LOW>;
++		};
++
++		led_status_blue: status_blue {
++			function = LED_FUNCTION_STATUS;
++			color = <LED_COLOR_ID_BLUE>;
++			gpios = <&tlmm 78 GPIO_ACTIVE_LOW>;
++		};
++	};
++};
++
++&edma {
++	status = "okay";
++};
++
++&switch {
++	status = "okay";
++
++	switch_lan_bmp = <(ESS_PORT2 | ESS_PORT3 | ESS_PORT4 | ESS_PORT5)>;
++	switch_wan_bmp = <ESS_PORT1>;
++	switch_mac_mode = <MAC_MODE_PSGMII>;
++
++	qcom,port_phyinfo {
++		port@1 {
++			port_id = <1>;
++			phy_address = <0>;
++		};
++
++		port@2 {
++			port_id = <2>;
++			phy_address = <1>;
++		};
++
++		port@3 {
++			port_id = <3>;
++			phy_address = <2>;
++		};
++
++		port@4 {
++			port_id = <4>;
++			phy_address = <3>;
++		};
++
++		port@5 {
++			port_id = <5>;
++			phy_address = <4>;
++		};
++	};
++};
++
++&tlmm {
++	mdio_pins: mdio-pins {
++		mdc {
++			pins = "gpio64";
++			function = "mdc";
++			drive-strength = <8>;
++			bias-pull-up;
++		};
++
++		mdio {
++			pins = "gpio65";
++			function = "mdio";
++			drive-strength = <8>;
++			bias-pull-up;
++		};
++	};
++};
++
++&mdio {
++	status = "okay";
++
++	pinctrl-0 = <&mdio_pins>;
++	pinctrl-names = "default";
++	reset-gpios = <&tlmm 75 GPIO_ACTIVE_LOW>;
++	reset-delay-us = <10000>;
++	reset-post-delay-us = <50000>;
++
++	ethernet-phy-package {
++		#address-cells = <1>;
++		#size-cells = <0>;
++		compatible = "qcom,qca8075-package";
++		reg = <0>;
++
++		qcom,package-mode = "psgmii";
++
++		phy0: ethernet-phy@0 {
++			compatible = "ethernet-phy-ieee802.3-c22";
++			reg = <0>;
++		};
++
++		phy1: ethernet-phy@1 {
++			compatible = "ethernet-phy-ieee802.3-c22";
++			reg = <1>;
++		};
++
++		phy2: ethernet-phy@2 {
++			compatible = "ethernet-phy-ieee802.3-c22";
++			reg = <2>;
++		};
++
++		phy3: ethernet-phy@3 {
++			compatible = "ethernet-phy-ieee802.3-c22";
++			reg = <3>;
++		};
++
++		phy4: ethernet-phy@4 {
++			compatible = "ethernet-phy-ieee802.3-c22";
++			reg = <4>;
++		};
++	};
++};
++
++&dp2 {
++	status = "okay";
++	phy-handle = <&phy1>;
++	label = "wan";
++	nvmem-cells = <&macaddr_boarddata 3>;
++	nvmem-cell-names = "mac-address";
++};
++
++&dp3 {
++	status = "okay";
++	phy-handle = <&phy2>;
++	label = "lan3";
++	nvmem-cells = <&macaddr_boarddata 2>;
++	nvmem-cell-names = "mac-address";
++};
++
++&dp4 {
++	status = "okay";
++	phy-handle = <&phy3>;
++	label = "lan2";
++	nvmem-cells = <&macaddr_boarddata 1>;
++	nvmem-cell-names = "mac-address";
++};
++
++&dp5 {
++	status = "okay";
++	phy-handle = <&phy4>;
++	label = "lan1";
++	nvmem-cells = <&macaddr_boarddata 0>;
++	nvmem-cell-names = "mac-address";
++};
++
++&blsp1_uart3 {
++	pinctrl-0 = <&serial_3_pins>;
++	pinctrl-names = "default";
++	status = "okay";
++};
++
++&prng {
++	status = "okay";
++};
++
++&cryptobam {
++	status = "okay";
++};
++
++&crypto {
++	status = "okay";
++};
++
++&qpic_bam {
++	status = "okay";
++};
++
++&qpic_nand {
++	status = "okay";
++
++	nand@0 {
++		reg = <0>;
++		nand-ecc-strength = <4>;
++		nand-ecc-step-size = <512>;
++		nand-bus-width = <8>;
++
++		partitions {
++			compatible = "qcom,smem-part";
++
++			partition-boarddata {
++				label = "boarddata";
++
++				nvmem-layout {
++					compatible = "fixed-layout";
++					#address-cells = <1>;
++					#size-cells = <1>;
++
++					macaddr_boarddata: macaddr@8 {
++						compatible = "mac-base";
++						reg = <0x8 0x6>;
++						#nvmem-cell-cells = <1>;
++					};
++				};
++			};
++
++			partition-0-appsblenv {
++				label = "0:appsblenv";
++
++				nvmem-layout {
++					compatible = "u-boot,env";
++					env-size = <0x40000>;
++				};
++			};
++		};
++	};
++};
++
++&wifi {
++	status = "okay";
++	qcom,ath11k-calibration-variant = "Netgear-RBK350";
++};
+diff --git a/target/linux/qualcommax/image/ipq60xx.mk b/target/linux/qualcommax/image/ipq60xx.mk
+index ecaa8479a06..f918ae139fe 100644
+--- a/target/linux/qualcommax/image/ipq60xx.mk
++++ b/target/linux/qualcommax/image/ipq60xx.mk
+@@ -10,6 +10,17 @@ define Build/wax610-netgear-tar
+ 	rm -rf $@.tmp
+ endef
+ 
++define Build/netgear-rbx350-qsdk-ipq-factory
++	$(CP) $(FLASH_SCRIPT) $(KDIR_TMP)/
++
++	echo "VERSION : V5.0.0.0_$(LINUX_VERSION)" > $@.metadata
++	echo "MODEL_ID : $(DEVICE_MODEL)" >> $@.metadata
++
++	$(TOPDIR)/scripts/mkits-qsdk-ipq-image.sh $@.its $(FLASH_SCRIPT) txt $@.metadata ubi $@
++	PATH=$(LINUX_DIR)/scripts/dtc:$(PATH) mkimage -f $@.its $@.new
++	@mv $@.new $@
++endef
++
+ define Device/8devices_mango-dvk
+ 	$(call Device/FitImageLzma)
+ 	DEVICE_VENDOR := 8devices
+@@ -145,6 +156,31 @@ define Device/linksys_mr7500
+ endef
+ TARGET_DEVICES += linksys_mr7500
+ 
++define Device/netgear_rbx350
++	$(call Device/FitImage)
++	$(call Device/UbiFit)
++	SOC := ipq6018
++	DEVICE_VENDOR := Netgear
++	BLOCKSIZE := 128k
++	PAGESIZE := 2048
++	DEVICE_PACKAGES := ipq-wifi-netgear_rbk350
++	FLASH_SCRIPT := netgear_rbx350.bootscript
++	IMAGES += factory.img
++	IMAGE/factory.img := append-ubi | netgear-rbx350-qsdk-ipq-factory
++endef
++
++define Device/netgear_rbr350
++	$(call Device/netgear_rbx350)
++	DEVICE_MODEL := RBR350
++endef
++TARGET_DEVICES += netgear_rbr350
++
++define Device/netgear_rbs350
++	$(call Device/netgear_rbx350)
++	DEVICE_MODEL := RBS350
++endef
++TARGET_DEVICES += netgear_rbs350
++
+ define Device/netgear_wax214
+ 	$(call Device/FitImage)
+ 	$(call Device/UbiFit)
+diff --git a/target/linux/qualcommax/image/netgear_rbx350.bootscript b/target/linux/qualcommax/image/netgear_rbx350.bootscript
+new file mode 100644
+index 00000000000..9eda83d5be8
+--- /dev/null
++++ b/target/linux/qualcommax/image/netgear_rbx350.bootscript
+@@ -0,0 +1,7 @@
++imxtract $imgaddr ubi
++switch_rootfs 0
++smeminfo
++nand erase.part fs
++nand write $fileaddr fs $filesize
++setenv bootcmd "ubi part fs && ubi read 0x44000000 kernel && bootm"
++saveenv
+diff --git a/target/linux/qualcommax/ipq60xx/base-files/etc/board.d/02_network b/target/linux/qualcommax/ipq60xx/base-files/etc/board.d/02_network
+index ceafb4027bd..67ac532602a 100644
+--- a/target/linux/qualcommax/ipq60xx/base-files/etc/board.d/02_network
++++ b/target/linux/qualcommax/ipq60xx/base-files/etc/board.d/02_network
+@@ -18,7 +18,8 @@ ipq60xx_setup_interfaces()
+ 	alfa-network,ap120c-ax)
+ 		ucidef_set_interfaces_lan_wan "lan" "wan"
+ 		;;
+-	cambiumnetworks,xe3-4)
++	cambiumnetworks,xe3-4|\
++	netgear,rbs350)
+ 		ucidef_set_interface_lan "lan1 lan2" "dhcp"
+ 		;;
+ 	glinet,gl-ax1800|\
+@@ -30,6 +31,7 @@ ipq60xx_setup_interfaces()
+ 		;;
+ 	jdcloud,re-cs-07|\
+ 	jdcloud,re-ss-01|\
++	netgear,rbr350|\
+ 	qihoo,360v6)
+ 		ucidef_set_interfaces_lan_wan "lan1 lan2 lan3" "wan"
+ 		;;
+diff --git a/target/linux/qualcommax/ipq60xx/base-files/etc/hotplug.d/firmware/11-ath11k-caldata b/target/linux/qualcommax/ipq60xx/base-files/etc/hotplug.d/firmware/11-ath11k-caldata
+index 5ed4f5966f0..77587aeca45 100644
+--- a/target/linux/qualcommax/ipq60xx/base-files/etc/hotplug.d/firmware/11-ath11k-caldata
++++ b/target/linux/qualcommax/ipq60xx/base-files/etc/hotplug.d/firmware/11-ath11k-caldata
+@@ -43,6 +43,14 @@ case "$FIRMWARE" in
+ 		ath11k_set_macflag
+ 		ath11k_remove_regdomain
+ 		;;
++	netgear,rbr350|\
++	netgear,rbs350)
++		caldata_extract "0:art" 0x1000 0x10000
++		label_mac=$(get_mac_label)
++		ath11k_patch_mac $(macaddr_add $label_mac 1) 1
++		ath11k_patch_mac $(macaddr_add $label_mac 2) 0
++		ath11k_set_macflag
++		;;
+ 	netgear,wax214)
+ 		caldata_extract "0:art" 0x1000 0x10000
+ 		;;
+diff --git a/target/linux/qualcommax/ipq60xx/base-files/lib/upgrade/platform.sh b/target/linux/qualcommax/ipq60xx/base-files/lib/upgrade/platform.sh
+index 27f34ae1dfb..fccd4463dbd 100644
+--- a/target/linux/qualcommax/ipq60xx/base-files/lib/upgrade/platform.sh
++++ b/target/linux/qualcommax/ipq60xx/base-files/lib/upgrade/platform.sh
+@@ -117,6 +117,8 @@ platform_do_upgrade() {
+ 		;;
+ 	glinet,gl-ax1800|\
+ 	glinet,gl-axt1800|\
++	netgear,rbr350|\
++	netgear,rbs350|\
+ 	netgear,wax214|\
+ 	qihoo,360v6)
+ 		nand_do_upgrade "$1"

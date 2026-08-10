@@ -1,0 +1,922 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Murad Rabadanov <the21.21@mail.ru>
+Date: Wed, 29 Jul 2026 08:52:42 +0300
+Subject: [PATCH 74/76] mediatek: filogic: add support for netis N6 V2
+
+netis N6 V2 is a MT7981B-based router, hardware-compatible with
+netis NX32U (confirmed via bootloader cross-flash). GPIO mappings
+not covered by the vendor DTS were verified against NX32U and via
+live link/carrier testing on switch ports, plus direct LED-toggle
+confirmation on the physical device.
+
+Hardware:
+  SoC:      MediaTek MT7981B (Filogic 820)
+  RAM:      256 MiB DDR3 (ESMT M15T2G16128A-AZR1-EFB, DDR3-1866)
+  Flash:    128 MiB SPI-NAND
+  Ethernet: 4x 1GbE (mt7531 switch: wan, lan1, lan2, lan3),
+            2.5GbE internal CPU-switch link (gmac0, 2500base-x)
+  WiFi:     MT7981 integrated 2.4GHz + MT7976C 5GHz radio,
+            802.11ax, 2x2 MU-MIMO, HE160 supported (confirmed live;
+            vendor firmware ships with HE80 for the AX1800 rating)
+  USB:      1x USB 3.0 (vbus GPIO 23, active high)
+  Buttons:  mesh/rfkill (GPIO 0), reset (GPIO 1)
+  LEDs:     power (GPIO 4), status (GPIO 5), wan (GPIO 9),
+            wlan 2.4GHz (GPIO 34, phy0tpt trigger),
+            wlan 5GHz (GPIO 35, phy1tpt trigger),
+            usb (GPIO 13, usbport trigger)
+            all active low
+  UART:     115200n8, uart0
+
+MAC addresses:
+  Interface   | Source           | Offset   | Address (this unit)
+  ------------|------------------|----------|--------------------
+  WAN         | Factory mac-base | 0x1fef26 | 30:07:5c:dc:7a:d2
+  LAN/CPU     | Factory mac-base | 0x1fef20 | 30:07:5c:dc:7a:d0 (label)
+  WiFi 2.4GHz | radio calibration (auto)     | 30:07:5c:dc:7a:d1
+  WiFi 5GHz   | radio calibration (auto)     | b2:07:5c:dc:7a:d1
+
+  LAN address matches the label on the device enclosure. WAN uses
+  macaddr_factory_1fef26 on switch port@0, LAN/CPU uses
+  macaddr_factory_1fef20 on port@6 (mt7531 switch). WiFi MACs are not
+  set explicitly in DTS -- mt76 derives them from the radio's own
+  calibration data, confirmed live to match the stock firmware value.
+
+The USB LED (GPIO 13) was missed in the initial GPIO mapping pass --
+it isn't referenced anywhere in the vendor DTS or any other board
+signal, so it went unnoticed until manual GPIO toggling (`gpio clear
+13` at the U-Boot prompt) confirmed it live on the physical device.
+The USB LED on GPIO 13 uses the usbport trigger with trigger-sources
+on both xhci ports, hence kmod-usb-ledtrig-usbport in DEVICE_PACKAGES.
+
+The included U-Boot defenv for this board also avoids a silent
+failure in ubi_write_production/ubi_write_recovery: these call
+`ubi remove <vol>` without first detaching/reattaching the UBI
+device, which fails silently on a busy volume while the boot script
+proceeds as if it succeeded. Worked around here by adding
+`ubi detach ; ubi part ubi ;` before the remove, a pattern already
+used in other boards' defenvs (see issue #18231). Only this board's
+defenv is touched -- other boards' defenv files are unchanged.
+
+Known upstream issue (not specific to this port): probing
+u-boot-env-layout on the ubootenv/ubootenv2 UBI volumes logs
+"Invalid calculated CRC32" on every boot, see mediatek/filogic
+issues #21876 and #22383.
+
+Installation:
+  Requires network access to stock firmware SSH (enabled by default)
+  and a TFTP server on the same subnet.
+  1. Set up a TFTP server on your PC at 192.168.1.254, serving the
+     files from this release.
+  2. SSH into stock firmware: ssh root@192.168.1.1
+  3. Copy bl31-uboot.fip to the router and write it to the FIP
+     partition: mtd write bl31-uboot.fip FIP
+  4. Erase the ubi partition: mtd erase ubi
+  5. Reboot. The new bootloader will detect the missing production
+     image and automatically fetch initramfs-recovery.itb via TFTP.
+  6. Once recovery has booted, SSH in again and sysupgrade to the
+     production image: sysupgrade squashfs-sysupgrade.itb
+
+Signed-off-by: Murad Rabadanov <the21.21@mail.ru>
+Link: https://github.com/openwrt/openwrt/pull/24089
+Signed-off-by: Hauke Mehrtens <hauke@hauke-m.de>
+---
+ package/boot/uboot-mediatek/Makefile          |  13 +
+ .../patches/501-add-netis-n6-v2.patch         | 355 ++++++++++++++++++
+ .../uboot-envtools/files/mediatek_filogic     |   1 +
+ .../mediatek/dts/mt7981b-netis-n6-v2.dts      | 335 +++++++++++++++++
+ .../filogic/base-files/etc/board.d/01_leds    |   3 +
+ .../filogic/base-files/etc/board.d/02_network |   1 +
+ .../base-files/lib/upgrade/platform.sh        |   2 +
+ target/linux/mediatek/image/filogic.mk        |  26 ++
+ 8 files changed, 736 insertions(+)
+ create mode 100644 package/boot/uboot-mediatek/patches/501-add-netis-n6-v2.patch
+ create mode 100644 target/linux/mediatek/dts/mt7981b-netis-n6-v2.dts
+
+diff --git a/package/boot/uboot-mediatek/Makefile b/package/boot/uboot-mediatek/Makefile
+index fb7904a3baf..1de86671183 100644
+--- a/package/boot/uboot-mediatek/Makefile
++++ b/package/boot/uboot-mediatek/Makefile
+@@ -541,6 +541,18 @@ define U-Boot/mt7981_netis_eap930-v1
+   DEPENDS:=+trusted-firmware-a-mt7981-spim-nand-ddr3
+ endef
+ 
++define U-Boot/mt7981_netis_n6-v2
++  NAME:=netis N6 V2
++  BUILD_SUBTARGET:=filogic
++  BUILD_DEVICES:=netis_n6-v2
++  UBOOT_CONFIG:=mt7981_netis_n6-v2
++  UBOOT_IMAGE:=u-boot.fip
++  BL2_BOOTDEV:=spim-nand
++  BL2_SOC:=mt7981
++  BL2_DDRTYPE:=ddr3-1866
++  DEPENDS:=+trusted-firmware-a-mt7981-spim-nand-ddr3-1866
++endef
++
+ define U-Boot/mt7981_netis_nx30v2
+   NAME:=Netis NX30V2
+   BUILD_SUBTARGET:=filogic
+@@ -1301,6 +1313,7 @@ UBOOT_TARGETS := \
+ 	mt7981_jcg_q30-pro \
+ 	mt7981_konka_komi-a31 \
+ 	mt7981_netis_eap930-v1 \
++	mt7981_netis_n6-v2 \
+ 	mt7981_netis_nx30v2 \
+ 	mt7981_netis_nx31 \
+ 	mt7981_netis_nx32u \
+diff --git a/package/boot/uboot-mediatek/patches/501-add-netis-n6-v2.patch b/package/boot/uboot-mediatek/patches/501-add-netis-n6-v2.patch
+new file mode 100644
+index 00000000000..d53c008172a
+--- /dev/null
++++ b/package/boot/uboot-mediatek/patches/501-add-netis-n6-v2.patch
+@@ -0,0 +1,355 @@
++--- /dev/null
+++++ b/configs/mt7981_netis_n6-v2_defconfig
++@@ -0,0 +1,111 @@
+++CONFIG_ARM=y
+++CONFIG_ARM_SMCCC=y
+++CONFIG_SYS_HAS_NONCACHED_MEMORY=y
+++CONFIG_POSITION_INDEPENDENT=y
+++CONFIG_ARCH_MEDIATEK=y
+++CONFIG_TEXT_BASE=0x41e00000
+++CONFIG_SYS_MALLOC_F_LEN=0x4000
+++CONFIG_NR_DRAM_BANKS=1
+++CONFIG_DEFAULT_DEVICE_TREE="mt7981-netis_n6-v2"
+++CONFIG_OF_LIBFDT_OVERLAY=y
+++CONFIG_TARGET_MT7981=y
+++CONFIG_SYS_LOAD_ADDR=0x46000000
+++CONFIG_PRE_CON_BUF_ADDR=0x4007ef00
+++CONFIG_DEBUG_UART_BASE=0x11002000
+++CONFIG_DEBUG_UART_CLOCK=40000000
+++CONFIG_DEBUG_UART=y
+++CONFIG_FIT=y
+++CONFIG_BOOTDELAY=30
+++CONFIG_AUTOBOOT_KEYED=y
+++CONFIG_AUTOBOOT_MENU_SHOW=y
+++CONFIG_DEFAULT_FDT_FILE="mediatek/mt7981-netis_n6-v2.dtb"
+++CONFIG_LOGLEVEL=7
+++CONFIG_PRE_CONSOLE_BUFFER=y
+++CONFIG_LOG=y
+++# CONFIG_BOARD_INIT is not set
+++CONFIG_BOARD_LATE_INIT=y
+++CONFIG_HUSH_PARSER=y
+++CONFIG_SYS_PROMPT="MT7981> "
+++CONFIG_CMD_CPU=y
+++CONFIG_CMD_LICENSE=y
+++CONFIG_CMD_BOOTMENU=y
+++CONFIG_CMD_ASKENV=y
+++CONFIG_CMD_ERASEENV=y
+++CONFIG_CMD_ENV_FLAGS=y
+++CONFIG_CMD_STRINGS=y
+++CONFIG_CMD_DM=y
+++CONFIG_CMD_GPIO=y
+++CONFIG_CMD_GPT=y
+++CONFIG_CMD_MTD=y
+++CONFIG_CMD_PART=y
+++CONFIG_CMD_TFTPSRV=y
+++CONFIG_CMD_RARP=y
+++CONFIG_CMD_CDP=y
+++CONFIG_CMD_SNTP=y
+++CONFIG_CMD_LINK_LOCAL=y
+++CONFIG_CMD_DHCP=y
+++CONFIG_CMD_DNS=y
+++CONFIG_CMD_PING=y
+++CONFIG_CMD_PXE=y
+++CONFIG_CMD_CACHE=y
+++CONFIG_CMD_PSTORE=y
+++CONFIG_CMD_PSTORE_MEM_ADDR=0x42ff0000
+++CONFIG_CMD_UUID=y
+++CONFIG_CMD_HASH=y
+++CONFIG_CMD_SMC=y
+++CONFIG_CMD_UBI=y
+++CONFIG_CMD_UBI_RENAME=y
+++CONFIG_OF_EMBED=y
+++CONFIG_ENV_OVERWRITE=y
+++CONFIG_ENV_IS_IN_UBI=y
+++CONFIG_ENV_REDUNDANT=y
+++CONFIG_ENV_UBI_PART="ubi"
+++CONFIG_ENV_UBI_VOLUME="ubootenv"
+++CONFIG_ENV_UBI_VOLUME_REDUND="ubootenv2"
+++CONFIG_ENV_RELOC_GD_ENV_ADDR=y
+++CONFIG_ENV_USE_DEFAULT_ENV_TEXT_FILE=y
+++CONFIG_ENV_DEFAULT_ENV_TEXT_FILE="defenvs/netis_n6-v2_env"
+++CONFIG_ENV_VARS_UBOOT_RUNTIME_CONFIG=y
+++CONFIG_VERSION_VARIABLE=y
+++CONFIG_NETCONSOLE=y
+++CONFIG_USE_IPADDR=y
+++CONFIG_IPADDR="192.168.1.1"
+++CONFIG_USE_SERVERIP=y
+++CONFIG_SERVERIP="192.168.1.254"
+++CONFIG_NET_RANDOM_ETHADDR=y
+++CONFIG_BUTTON=y
+++CONFIG_BUTTON_GPIO=y
+++CONFIG_CLK=y
+++CONFIG_GPIO_HOG=y
+++CONFIG_LED=y
+++CONFIG_LED_BLINK=y
+++CONFIG_LED_GPIO=y
+++# CONFIG_MMC is not set
+++CONFIG_MTD=y
+++CONFIG_DM_MTD=y
+++CONFIG_MTD_SPI_NAND=y
+++CONFIG_MTD_UBI_FASTMAP=y
+++CONFIG_PHY_FIXED=y
+++CONFIG_MEDIATEK_ETH=y
+++CONFIG_PHY=y
+++CONFIG_PHY_MTK_TPHY=y
+++CONFIG_PINCTRL=y
+++CONFIG_PINCONF=y
+++CONFIG_PINCTRL_MT7981=y
+++CONFIG_POWER_DOMAIN=y
+++CONFIG_MTK_POWER_DOMAIN=y
+++CONFIG_DM_REGULATOR=y
+++CONFIG_DM_REGULATOR_FIXED=y
+++CONFIG_DM_REGULATOR_GPIO=y
+++CONFIG_RAM=y
+++CONFIG_DM_RNG=y
+++CONFIG_RNG_MTK_V2=y
+++CONFIG_CMD_RNG=y
+++CONFIG_DM_SERIAL=y
+++CONFIG_SERIAL_RX_BUFFER=y
+++CONFIG_MTK_SERIAL=y
+++CONFIG_SPI=y
+++CONFIG_DM_SPI=y
+++CONFIG_MTK_SPIM=y
+++CONFIG_ZSTD=y
+++CONFIG_HEXDUMP=y
++--- /dev/null
+++++ b/arch/arm/dts/mt7981-netis_n6-v2.dts
++@@ -0,0 +1,178 @@
+++// SPDX-License-Identifier: GPL-2.0
+++/*
+++ * Netis N6 V2 - U-Boot device tree
+++ *
+++ * GPIO numbers confirmed on the live device via
+++ * /sys/kernel/debug/gpio (base=455, pio N = gpio-(455+N)) and via
+++ * live LED-toggle testing with visual confirmation:
+++ *   pio 0 = wps/mesh button, pio 1 = reset button
+++ *   pio 4 = PWR LED, pio 5 = MESH/status LED, pio 9 = INTERNET/WAN LED
+++ *   pio 34 = WLAN 2.4G LED, pio 35 = WLAN 5G LED
+++ */
+++
+++/dts-v1/;
+++#include "mt7981.dtsi"
+++#include <dt-bindings/gpio/gpio.h>
+++#include <dt-bindings/input/linux-event-codes.h>
+++
+++/ {
+++	#address-cells = <1>;
+++	#size-cells = <1>;
+++	model = "netis N6 V2";
+++	compatible = "netis,n6-v2", "mediatek,mt7981";
+++
+++	chosen {
+++		stdout-path = &uart0;
+++		tick-timer = &timer0;
+++	};
+++
+++	memory@40000000 {
+++		device_type = "memory";
+++		reg = <0x40000000 0x10000000>;
+++	};
+++
+++	keys {
+++		compatible = "gpio-keys";
+++
+++		button-0 {
+++			label = "mesh";
+++			linux,code = <BTN_0>;
+++			gpios = <&pio 0 GPIO_ACTIVE_LOW>;
+++		};
+++
+++		button-1 {
+++			label = "reset";
+++			linux,code = <KEY_RESTART>;
+++			gpios = <&pio 1 GPIO_ACTIVE_LOW>;
+++		};
+++	};
+++
+++	leds {
+++		compatible = "gpio-leds";
+++
+++		led-0 {
+++			label = "blue:wlan2g";
+++			gpios = <&pio 34 GPIO_ACTIVE_LOW>;
+++		};
+++
+++		led-1 {
+++			label = "blue:power";
+++			gpios = <&pio 4 GPIO_ACTIVE_LOW>;
+++		};
+++
+++		led-2 {
+++			label = "blue:status";
+++			gpios = <&pio 5 GPIO_ACTIVE_LOW>;
+++		};
+++
+++		led-3 {
+++			label = "blue:wan";
+++			gpios = <&pio 9 GPIO_ACTIVE_LOW>;
+++		};
+++
+++		led-4 {
+++			label = "blue:wlan5g";
+++			gpios = <&pio 35 GPIO_ACTIVE_LOW>;
+++		};
+++
+++		led-5 {
+++			label = "blue:usb";
+++			gpios = <&pio 13 GPIO_ACTIVE_LOW>;
+++		};
+++	};
+++};
+++
+++&uart0 {
+++	mediatek,force-highspeed;
+++	status = "okay";
+++};
+++
+++&eth {
+++	status = "okay";
+++	mediatek,gmac-id = <0>;
+++	phy-mode = "2500base-x";
+++	mediatek,switch = "mt7531";
+++	reset-gpios = <&pio 39 GPIO_ACTIVE_HIGH>;
+++
+++	fixed-link {
+++		speed = <2500>;
+++		full-duplex;
+++	};
+++};
+++
+++&pio {
+++	spi_flash_pins: spi0-pins-func-1 {
+++		mux {
+++			function = "flash";
+++			groups = "spi0", "spi0_wp_hold";
+++		};
+++
+++		conf-pu {
+++			pins = "SPI0_CS", "SPI0_HOLD", "SPI0_WP";
+++			drive-strength = <MTK_DRIVE_8mA>;
+++			bias-pull-up = <MTK_PUPD_SET_R1R0_11>;
+++		};
+++
+++		conf-pd {
+++			pins = "SPI0_CLK", "SPI0_MOSI", "SPI0_MISO";
+++			drive-strength = <MTK_DRIVE_8mA>;
+++			bias-pull-down = <MTK_PUPD_SET_R1R0_11>;
+++		};
+++	};
+++};
+++
+++&spi0 {
+++	#address-cells = <1>;
+++	#size-cells = <0>;
+++	pinctrl-names = "default";
+++	pinctrl-0 = <&spi_flash_pins>;
+++	status = "okay";
+++	must_tx;
+++	enhance_timing;
+++	dma_ext;
+++	ipm_design;
+++	support_quad;
+++	tick_dly = <2>;
+++	sample_sel = <0>;
+++
+++	spi_nand@0 {
+++		compatible = "spi-nand";
+++		reg = <0>;
+++		spi-max-frequency = <52000000>;
+++
+++		partitions {
+++			compatible = "fixed-partitions";
+++			#address-cells = <1>;
+++			#size-cells = <1>;
+++
+++			partition@0 {
+++				label = "BL2";
+++				reg = <0x0 0x100000>;
+++			};
+++
+++			partition@100000 {
+++				label = "u-boot-env (unused)";
+++				reg = <0x100000 0x80000>;
+++			};
+++
+++			partition@180000 {
+++				label = "Factory";
+++				reg = <0x180000 0x200000>;
+++			};
+++
+++			partition@380000 {
+++				label = "FIP";
+++				reg = <0x380000 0x200000>;
+++			};
+++
+++			partition@580000 {
+++				label = "ubi";
+++				reg = <0x580000 0x7a80000>;
+++			};
+++		};
+++	};
+++};
+++
+++&watchdog {
+++	status = "disabled";
+++};
++--- /dev/null
+++++ b/defenvs/netis_n6-v2_env
++@@ -0,0 +1,57 @@
+++ipaddr=192.168.1.1
+++serverip=192.168.1.254
+++loadaddr=0x46000000
+++console=earlycon=uart8250,mmio32,0x11002000 console=ttyS0
+++bootcmd=run check_buttons ; if pstore check ; then run boot_recovery ; else run boot_ubi ; fi
+++bootconf=config-1
+++bootdelay=0
+++bootfile=openwrt-mediatek-filogic-netis_n6-v2-initramfs-recovery.itb
+++bootfile_bl2=openwrt-mediatek-filogic-netis_n6-v2-preloader.bin
+++bootfile_fip=openwrt-mediatek-filogic-netis_n6-v2-bl31-uboot.fip
+++bootfile_upg=openwrt-mediatek-filogic-netis_n6-v2-squashfs-sysupgrade.itb
+++bootled_status=blue:status
+++bootmenu_confirm_return=askenv - Press ENTER to return to menu ; bootmenu 60
+++bootmenu_default=0
+++bootmenu_delay=0
+++bootmenu_title=      ( ( ( OpenWrt ) ) )
+++bootmenu_0=Initialize environment.=run _firstboot
+++bootmenu_0d=Run default boot command.=run boot_default
+++bootmenu_1=Boot system via TFTP.=run boot_tftp ; run bootmenu_confirm_return
+++bootmenu_2=Boot production system from NAND.=run boot_production ; run bootmenu_confirm_return
+++bootmenu_3=Boot recovery system from NAND.=run boot_recovery ; run bootmenu_confirm_return
+++bootmenu_4=Load production system via TFTP then write to NAND.=setenv noboot 1 ; setenv replacevol 1 ; run boot_tftp_production ; setenv noboot ; setenv replacevol ; run bootmenu_confirm_return
+++bootmenu_5=Load recovery system via TFTP then write to NAND.=setenv noboot 1 ; setenv replacevol 1 ; run boot_tftp_recovery ; setenv noboot ; setenv replacevol ; run bootmenu_confirm_return
+++bootmenu_6=Load BL31+U-Boot FIP via TFTP then write to NAND.=run boot_tftp_write_fip ; run bootmenu_confirm_return
+++bootmenu_7=Load BL2 preloader via TFTP then write to NAND.=run boot_tftp_write_bl2 ; run bootmenu_confirm_return
+++bootmenu_8=Reboot.=reset
+++bootmenu_9=Reset all settings to factory defaults.=run reset_factory ; reset
+++boot_first=if button reset ; then led $bootled_status on ; run boot_default ; fi ; bootmenu
+++boot_default=if env exists flag_recover ; then else run bootcmd ; fi ; run boot_recovery ; setenv replacevol 1 ; run boot_tftp_forever
+++boot_production=led $bootled_status on ; run ubi_read_production && bootm $loadaddr#$bootconf ; led bootled_status off
+++boot_recovery=led $bootled_status on ; run ubi_read_recovery && bootm $loadaddr#$bootconf ; led bootled_status off
+++boot_ubi=run boot_production ; run boot_recovery ; run boot_tftp_forever
+++boot_tftp_forever=led $bootled_status on ; while true ; do run boot_tftp ; sleep 1 ; done
+++boot_tftp_production=tftpboot $loadaddr $bootfile_upg && env exists replacevol && iminfo $loadaddr && run ubi_write_production ; if env exists noboot ; then else bootm $loadaddr#$bootconf ; fi
+++boot_tftp_recovery=tftpboot $loadaddr $bootfile && env exists replacevol && iminfo $loadaddr && run ubi_write_recovery ; if env exists noboot ; then else bootm $loadaddr#$bootconf ; fi
+++boot_tftp=tftpboot $loadaddr $bootfile && bootm $loadaddr#$bootconf
+++boot_tftp_write_fip=tftpboot $loadaddr $bootfile_fip && run mtd_write_fip && run reset_factory
+++boot_tftp_write_bl2=tftpboot $loadaddr $bootfile_bl2 && run mtd_write_bl2
+++check_buttons=if button reset ; then run boot_tftp ; fi
+++ethaddr_factory=mtd read Factory 0x40080000 0x1e0000 0x20000 && env readmem -b ethaddr 0x4009ef20 0x6 ; setenv ethaddr_factory
+++part_default=production
+++part_recovery=recovery
+++reset_factory=ubi part ubi ; mw $loadaddr 0x0 0x800 ; ubi write $loadaddr ubootenv 0x800 ; ubi write $loadaddr ubootenv2 0x800
+++mtd_write_fip=mtd erase FIP && mtd write FIP $loadaddr
+++mtd_write_bl2=mtd erase BL2 && mtd write BL2 $loadaddr
+++ubi_create_env=ubi check ubootenv || ubi create ubootenv 0x1f000 dynamic || run ubi_format ; ubi check ubootenv2 || ubi create ubootenv2 0x1f000 dynamic || run ubi_format
+++ubi_format=ubi detach ; mtd erase ubi && ubi part ubi ; reset
+++ubi_prepare_rootfs=if ubi check rootfs_data ; then else if env exists rootfs_data_max ; then ubi create rootfs_data $rootfs_data_max dynamic || ubi create rootfs_data - dynamic ; else ubi create rootfs_data - dynamic ; fi ; fi
+++ubi_read_production=ubi read $loadaddr fit && iminfo $loadaddr && run ubi_prepare_rootfs
+++ubi_read_recovery=ubi check recovery && ubi read $loadaddr recovery
+++ubi_remove_rootfs=ubi check rootfs_data && ubi remove rootfs_data
+++ubi_write_production=ubi detach ; ubi part ubi ; ubi check fit && ubi remove fit ; run ubi_remove_rootfs ; ubi create fit $filesize dynamic && ubi write $loadaddr fit $filesize
+++ubi_write_recovery=ubi detach ; ubi part ubi ; ubi check recovery && ubi remove recovery ; run ubi_remove_rootfs ; ubi create recovery $filesize dynamic && ubi write $loadaddr recovery $filesize
+++_init_env=setenv _init_env ; run ubi_create_env ; saveenv ; saveenv
+++_firstboot=setenv _firstboot ; run ethaddr_factory ; run _switch_to_menu ; run _init_env ; run boot_first
+++_switch_to_menu=setenv _switch_to_menu ; setenv bootdelay 3 ; setenv bootmenu_delay 3 ; setenv bootmenu_0 $bootmenu_0d ; setenv bootmenu_0d ; run _bootmenu_update_title
+++_bootmenu_update_title=setenv _bootmenu_update_title ; setenv bootmenu_title "$bootmenu_title       $ver"
+diff --git a/package/boot/uboot-tools/uboot-envtools/files/mediatek_filogic b/package/boot/uboot-tools/uboot-envtools/files/mediatek_filogic
+index fe9b093b6ed..77a2e68ea7a 100644
+--- a/package/boot/uboot-tools/uboot-envtools/files/mediatek_filogic
++++ b/package/boot/uboot-tools/uboot-envtools/files/mediatek_filogic
+@@ -45,6 +45,7 @@ mercusys,mr90x-v1-ubi|\
+ netcore,n60|\
+ netcore,n60-pro|\
+ netis,eap930-v1|\
++netis,n6-v2|\
+ netis,nx30v2|\
+ netis,nx31|\
+ netis,nx32u|\
+diff --git a/target/linux/mediatek/dts/mt7981b-netis-n6-v2.dts b/target/linux/mediatek/dts/mt7981b-netis-n6-v2.dts
+new file mode 100644
+index 00000000000..d60f252ebfb
+--- /dev/null
++++ b/target/linux/mediatek/dts/mt7981b-netis-n6-v2.dts
+@@ -0,0 +1,335 @@
++// SPDX-License-Identifier: GPL-2.0-only OR MIT
++
++/dts-v1/;
++#include <dt-bindings/gpio/gpio.h>
++#include <dt-bindings/input/input.h>
++#include <dt-bindings/leds/common.h>
++
++#include "mt7981b.dtsi"
++
++/ {
++	model = "netis N6 V2";
++	compatible = "netis,n6-v2", "mediatek,mt7981";
++
++	aliases {
++		label-mac-device = &gmac0;
++
++		led-boot = &led_status_blue;
++		led-failsafe = &led_status_blue;
++		led-running = &led_status_blue;
++		led-upgrade = &led_status_blue;
++
++		serial0 = &uart0;
++	};
++
++	chosen {
++		rootdisk = <&ubi_fit_volume>;
++		stdout-path = "serial0:115200n8";
++	};
++
++	usb_vbus: regulator-usb {
++		compatible = "regulator-fixed";
++		regulator-name = "usb-vbus";
++		regulator-min-microvolt = <5000000>;
++		regulator-max-microvolt = <5000000>;
++		gpios = <&pio 23 GPIO_ACTIVE_HIGH>;
++		enable-active-high;
++		regulator-boot-on;
++		regulator-always-on;
++	};
++
++	gpio-keys {
++		compatible = "gpio-keys";
++
++		button-0 {
++			label = "mesh";
++			gpios = <&pio 0 GPIO_ACTIVE_LOW>;
++			linux,code = <KEY_RFKILL>;
++			debounce-interval = <60>;
++		};
++
++		button-1 {
++			label = "reset";
++			gpios = <&pio 1 GPIO_ACTIVE_LOW>;
++			linux,code = <KEY_RESTART>;
++			debounce-interval = <60>;
++		};
++	};
++
++	leds {
++		compatible = "gpio-leds";
++
++		led-0 {
++			color = <LED_COLOR_ID_BLUE>;
++			function = LED_FUNCTION_POWER;
++			gpios = <&pio 4 GPIO_ACTIVE_LOW>;
++		};
++
++		led_status_blue: led-1 {
++			color = <LED_COLOR_ID_BLUE>;
++			function = LED_FUNCTION_STATUS;
++			gpios = <&pio 5 GPIO_ACTIVE_LOW>;
++		};
++
++		led-2 {
++			color = <LED_COLOR_ID_BLUE>;
++			function = LED_FUNCTION_WAN;
++			gpios = <&pio 9 GPIO_ACTIVE_LOW>;
++		};
++
++		led-3 {
++			color = <LED_COLOR_ID_BLUE>;
++			function = LED_FUNCTION_USB;
++			gpios = <&pio 13 GPIO_ACTIVE_LOW>;
++			linux,default-trigger = "usbport";
++			trigger-sources = <&usb3_port1>, <&usb3_port2>;
++		};
++
++		led-4 {
++			color = <LED_COLOR_ID_BLUE>;
++			function = LED_FUNCTION_WLAN_2GHZ;
++			gpios = <&pio 34 GPIO_ACTIVE_LOW>;
++			linux,default-trigger = "phy0tpt";
++		};
++
++		led-5 {
++			color = <LED_COLOR_ID_BLUE>;
++			function = LED_FUNCTION_WLAN_5GHZ;
++			gpios = <&pio 35 GPIO_ACTIVE_LOW>;
++			linux,default-trigger = "phy1tpt";
++		};
++	};
++};
++
++&eth {
++	status = "okay";
++
++	gmac0: mac@0 {
++		compatible = "mediatek,eth-mac";
++		reg = <0>;
++		phy-mode = "2500base-x";
++
++		nvmem-cell-names = "mac-address";
++		nvmem-cells = <&macaddr_factory_1fef20 0>;
++
++		fixed-link {
++			speed = <2500>;
++			full-duplex;
++			pause;
++		};
++	};
++};
++
++&mdio_bus {
++	switch: switch@1f {
++		compatible = "mediatek,mt7531";
++		reg = <0x1f>;
++		reset-gpios = <&pio 39 GPIO_ACTIVE_HIGH>;
++		interrupt-controller;
++		#interrupt-cells = <1>;
++		interrupt-parent = <&pio>;
++		interrupts = <38 IRQ_TYPE_LEVEL_HIGH>;
++	};
++};
++
++&spi0 {
++	pinctrl-names = "default";
++	pinctrl-0 = <&spi0_flash_pins>;
++	status = "okay";
++
++	spi_nand@0 {
++		compatible = "spi-nand";
++		reg = <0>;
++
++		spi-max-frequency = <52000000>;
++		spi-tx-bus-width = <4>;
++		spi-rx-bus-width = <4>;
++
++		spi-cal-enable;
++		spi-cal-mode = "read-data";
++		spi-cal-datalen = <7>;
++		spi-cal-data = /bits/ 8 <0x53 0x50 0x49 0x4e 0x41 0x4e 0x44>;
++		spi-cal-addrlen = <5>;
++		spi-cal-addr = /bits/ 32 <0x0 0x0 0x0 0x0 0x0>;
++
++		partitions {
++			compatible = "fixed-partitions";
++			#address-cells = <1>;
++			#size-cells = <1>;
++
++			partition@0 {
++				label = "BL2";
++				reg = <0x0 0x100000>;
++				read-only;
++			};
++
++			partition@100000 {
++				label = "u-boot-env (unused)";
++				reg = <0x100000 0x80000>;
++				read-only;
++			};
++
++			partition@180000 {
++				label = "Factory";
++				reg = <0x180000 0x200000>;
++				read-only;
++
++				nvmem-layout {
++					compatible = "fixed-layout";
++					#address-cells = <1>;
++					#size-cells = <1>;
++
++					eeprom_factory_0: eeprom@0 {
++						reg = <0x0 0x1000>;
++					};
++
++					macaddr_factory_1fef20: macaddr@1fef20 {
++						compatible = "mac-base";
++						reg = <0x1fef20 0x6>;
++						#nvmem-cell-cells = <1>;
++					};
++
++					macaddr_factory_1fef26: macaddr@1fef26 {
++						compatible = "mac-base";
++						reg = <0x1fef26 0x6>;
++						#nvmem-cell-cells = <1>;
++					};
++				};
++			};
++
++			partition@380000 {
++				label = "FIP";
++				reg = <0x380000 0x200000>;
++				read-only;
++			};
++
++			partition@580000 {
++				label = "ubi";
++				reg = <0x580000 0x7a80000>;
++				compatible = "linux,ubi";
++
++				volumes {
++					ubi_fit_volume: ubi-volume-fit {
++						volname = "fit";
++					};
++
++					ubi_ubootenv: ubi-volume-ubootenv {
++						volname = "ubootenv";
++					};
++
++					ubi_ubootenv2: ubi-volume-ubootenv2 {
++						volname = "ubootenv2";
++					};
++				};
++			};
++		};
++	};
++};
++
++&switch {
++	ports {
++		#address-cells = <1>;
++		#size-cells = <0>;
++
++		port@0 {
++			reg = <0>;
++			label = "wan";
++
++			nvmem-cell-names = "mac-address";
++			nvmem-cells = <&macaddr_factory_1fef26 0>;
++		};
++
++		port@1 {
++			reg = <1>;
++			label = "lan1";
++		};
++
++		port@2 {
++			reg = <2>;
++			label = "lan2";
++		};
++
++		port@3 {
++			reg = <3>;
++			label = "lan3";
++		};
++
++		port@6 {
++			reg = <6>;
++			ethernet = <&gmac0>;
++			phy-mode = "2500base-x";
++
++			fixed-link {
++				speed = <2500>;
++				full-duplex;
++				pause;
++			};
++		};
++	};
++};
++
++&pio {
++	spi0_flash_pins: spi0-pins {
++		mux {
++			function = "spi";
++			groups = "spi0", "spi0_wp_hold";
++		};
++
++		conf-pu {
++			pins = "SPI0_CS", "SPI0_HOLD", "SPI0_WP";
++			drive-strength = <MTK_DRIVE_8mA>;
++			bias-pull-up = <MTK_PUPD_SET_R1R0_11>;
++		};
++
++		conf-pd {
++			pins = "SPI0_CLK", "SPI0_MOSI", "SPI0_MISO";
++			drive-strength = <MTK_DRIVE_8mA>;
++			bias-pull-down = <MTK_PUPD_SET_R1R0_11>;
++		};
++	};
++};
++
++&uart0 {
++	status = "okay";
++};
++
++&usb_phy {
++	status = "okay";
++};
++
++&xhci {
++	vbus-supply = <&usb_vbus>;
++	status = "okay";
++
++	usb3_port1: port@1 {
++		reg = <1>;
++		#trigger-source-cells = <0>;
++	};
++
++	usb3_port2: port@2 {
++		reg = <2>;
++		#trigger-source-cells = <0>;
++	};
++};
++
++&ubi_ubootenv {
++	nvmem-layout {
++		compatible = "u-boot,env-redundant-bool";
++	};
++};
++
++&ubi_ubootenv2 {
++	nvmem-layout {
++		compatible = "u-boot,env-redundant-bool";
++	};
++};
++
++&watchdog {
++	status = "okay";
++};
++
++&wifi {
++	status = "okay";
++	nvmem-cell-names = "eeprom";
++	nvmem-cells = <&eeprom_factory_0>;
++};
+diff --git a/target/linux/mediatek/filogic/base-files/etc/board.d/01_leds b/target/linux/mediatek/filogic/base-files/etc/board.d/01_leds
+index 426c97aef00..149de350e52 100644
+--- a/target/linux/mediatek/filogic/base-files/etc/board.d/01_leds
++++ b/target/linux/mediatek/filogic/base-files/etc/board.d/01_leds
+@@ -206,6 +206,9 @@ netgear,eax17)
+ netgear,wax220)
+ 	ucidef_set_led_netdev "eth0" "LAN" "green:lan" "eth0"
+ 	;;
++netis,n6-v2)
++	ucidef_set_led_netdev "wan" "WAN" "blue:wan" "wan" "link tx rx"
++	;;
+ netis,nx30v2)
+ 	ucidef_set_led_netdev "wanlink" "WANLINK" "blue:wan" "eth1" "link"
+ 	ucidef_set_led_netdev "wanact" "WANACT" "blue:wan-online" "eth1" "tx rx"
+diff --git a/target/linux/mediatek/filogic/base-files/etc/board.d/02_network b/target/linux/mediatek/filogic/base-files/etc/board.d/02_network
+index 053a7dbb0f9..c073188c72f 100644
+--- a/target/linux/mediatek/filogic/base-files/etc/board.d/02_network
++++ b/target/linux/mediatek/filogic/base-files/etc/board.d/02_network
+@@ -69,6 +69,7 @@ mediatek_setup_interfaces()
+ 	keenetic,kn-3711|\
+ 	keenetic,kn-3811|\
+ 	livinet,li320|\
++	netis,n6-v2|\
+ 	netis,nx32u|\
+ 	qihoo,360t7|\
+ 	qihoo,360t7-ubi|\
+diff --git a/target/linux/mediatek/filogic/base-files/lib/upgrade/platform.sh b/target/linux/mediatek/filogic/base-files/lib/upgrade/platform.sh
+index c1daf6da599..2980dd4690e 100644
+--- a/target/linux/mediatek/filogic/base-files/lib/upgrade/platform.sh
++++ b/target/linux/mediatek/filogic/base-files/lib/upgrade/platform.sh
+@@ -167,6 +167,7 @@ platform_do_upgrade() {
+ 	mediatek,mt7988a-rfb|\
+ 	mercusys,mr90x-v1-ubi|\
+ 	netis,eap930-v1|\
++	netis,n6-v2|\
+ 	netis,nx30v2|\
+ 	netis,nx31|\
+ 	netis,nx32u|\
+@@ -412,6 +413,7 @@ platform_check_image() {
+ 	mercusys,mr90x-v1-ubi|\
+ 	nokia,ea0326gmp|\
+ 	netis,eap930-v1|\
++	netis,n6-v2|\
+ 	netis,nx32u|\
+ 	openwrt,one|\
+ 	netcore,n60|\
+diff --git a/target/linux/mediatek/image/filogic.mk b/target/linux/mediatek/image/filogic.mk
+index 0ad00a16e29..c9033b31a7f 100644
+--- a/target/linux/mediatek/image/filogic.mk
++++ b/target/linux/mediatek/image/filogic.mk
+@@ -2830,6 +2830,32 @@ define Device/netis_eap930-v1
+ endef
+ TARGET_DEVICES += netis_eap930-v1
+ 
++define Device/netis_n6-v2
++  DEVICE_VENDOR := netis
++  DEVICE_MODEL := N6 V2
++  DEVICE_DTS := mt7981b-netis-n6-v2
++  DEVICE_DTS_DIR := ../dts
++  UBINIZE_OPTS := -E 5
++  BLOCKSIZE := 128k
++  PAGESIZE := 2048
++  KERNEL_IN_UBI := 1
++  UBOOTENV_IN_UBI := 1
++  IMAGES := sysupgrade.itb
++  KERNEL_INITRAMFS_SUFFIX := -recovery.itb
++  KERNEL := kernel-bin | libdeflate-gzip
++  KERNEL_INITRAMFS := kernel-bin | lzma | \
++	fit lzma $$(KDIR)/image-$$(firstword $$(DEVICE_DTS)).dtb with-initrd | pad-to 64k
++  IMAGE/sysupgrade.itb := append-kernel | \
++	fit gzip $$(KDIR)/image-$$(firstword $$(DEVICE_DTS)).dtb external-static-with-rootfs | \
++	append-metadata
++  DEVICE_PACKAGES := kmod-mt7915e kmod-mt7981-firmware mt7981-wo-firmware \
++	kmod-usb3 kmod-usb-ledtrig-usbport
++  ARTIFACTS := preloader.bin bl31-uboot.fip
++  ARTIFACT/preloader.bin := mt7981-bl2 spim-nand-ddr3-1866
++  ARTIFACT/bl31-uboot.fip := mt7981-bl31-uboot netis_n6-v2
++endef
++TARGET_DEVICES += netis_n6-v2
++
+ define Device/netis_nx30v2
+   DEVICE_VENDOR := Netis
+   DEVICE_MODEL := NX30V2

@@ -1,0 +1,373 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Hal Martin <hal.martin@gmail.com>
+Date: Sun, 28 Dec 2025 14:43:17 +0100
+Subject: [PATCH 02/76] ipq40xx: add support for Cisco Meraki MR20
+
+This commit adds support for the Cisco Meraki MR20/Go GR10.
+
+The Meraki MR20 is a Cisco 802.11ac/WiFi 5 AP with 1 Ethernet port.
+It can be powered by a 12V DC barrel jack (5.5x2.5mm, center positive)
+or via 802.3af POE.
+
+The Meraki Go GR10 (codename: Maggot) is identical to the MR20
+(codename: Grub), so this document will refer to both devices as the MR20.
+
+MR20 hardware info:
+* CPU: Qualcomm IPQ4029
+* RAM: 256MB DDR3
+* Storage: 128 MB (MX30LF1G18AC)
+* Networking: 1 Gigabit Ethernet
+* WiFi: QCA4019 802.11b/g/n/ac
+* Serial: Internal header (J10, 2.54mm, unpopulated)
+
+This device ships with secure boot, and cannot be flashed without
+external programmers (TSOP48 NAND and I2C EEEPROM)!
+
+Disassembly:
+
+Remove the four rubber feet on the rear of the AP and the four
+Torx T8 screws under the feet.
+
+Using a guitar pick or similar plastic tool, insert it on the side
+along the seam around the edge. Push in gently while gently lifting
+the front of the housing to release the plastic retention clips.
+
+There are 15 clips in total.
+
+Once you have removed the plastic front (shown above already removed
+so you know where the clips are), remove the 4 Philips screws holding
+down the two metal WiFi antennas.
+
+Lift the PCB gently while pushing the Ethernet port into the housing
+to release it. The PCB should come free from the metal heat spreader.
+
+The TSOP48 NAND flash (U9, Macronix/MXIC MX30LF1G18AC) is located on
+the opposite side of the PCB.
+
+To flash, you need to desolder the TSOP48 or use a 360 clip.
+
+You also need to reprogram the I2C EEPROM (U20, Atmel 24c64).
+
+Installation:
+
+The dumps to flash can be found in this repository:
+https://github.com/halmartin/meraki-openwrt-docs/tree/main/mr20_gr10
+
+The device has the following flash layout (offsets with OOB data):
+```
+0x000000000000-0x000000100000 : "sbl1"
+0x000000100000-0x000000200000 : "mibib"
+0x000000200000-0x000000300000 : "bootconfig"
+0x000000300000-0x000000400000 : "qsee"
+0x000000400000-0x000000500000 : "qsee_alt"
+0x000000500000-0x000000580000 : "cdt"
+0x000000580000-0x000000600000 : "cdt_alt"
+0x000000600000-0x000000680000 : "ddrparams"
+0x000000700000-0x000000900000 : "u-boot"
+0x000000900000-0x000000b00000 : "u-boot-backup"
+0x000000b00000-0x000000b80000 : "ART"
+0x000000c00000-0x000007c00000 : "ubi"
+```
+
+* Dump your original NAND (if using nanddump, include OOB data).
+
+* Decompress `u-boot.bin.gz` dump from the GitHub repository above (dump
+contains OOB data) and overwrite the `u-boot` portion of NAND from
+`0x738000`-`0x948000` (length `0x210000`). Offsets here include OOB data.
+
+* Decompress `ubi.bin.gz` dump from the GitHub repository above (dump
+contains OOB data) and overwrite the `ubi` portion of NAND from
+`0xc60000`-`0x8400000` (length `0x77a0000`). Offsets here include OOB data.
+
+* Dump your original EEPROM. Change the byte at offset `0x49` to `0x1e`
+(originally `0x2c` or `0x25`). Remember to re-write the EEPROM with the
+modified data.
+    * This can be done on Linux via the following command:
+    `printf "\x1e" | dd of=/tmp/eeprom.bin bs=1 seek=$((0x49)) conv=notrunc`
+
+**Note**: the device will not boot if you modify the board major number and
+have not yet overwritten the `ubi` and `u-boot` regions of NAND.
+
+* Resolder the NAND after overwriting the `u-boot` and `ubi` regions.
+
+OpenWrt Installation:
+
+* After flashing NAND and EEPROM with external programmers. Plug in an
+Ethernet cable and power up the device.
+
+* The new U-Boot build uses the space character `" "` (without quotes) to
+interrupt boot.
+
+* Interrupt U-Boot and `tftpboot` the OpenWrt initramfs image from your
+tftp server
+```
+dhcp
+setenv serverip <your_tftp>
+tftpboot openwrt-ipq40xx-generic-meraki_mr20-initramfs-uImage.itb
+```
+
+* Once booted into the OpenWrt initramfs, created the `ART` ubivol with
+the WiFi radio calibration from the mtd partition:
+```
+cat /dev/mtd10 > /tmp/ART.bin
+ubiupdatevol /dev/ubi0_1 /tmp/ART.bin
+```
+
+* `scp` the `sysupgrade` image to
+the device and run the normal `sysupgrade` procedure:
+```
+scp -O openwrt-ipq40xx-generic-meraki_mr20-squashfs-sysupgrade.bin root@192.168.1.1:/tmp/
+ssh root@192.168.1.1 "sysupgrade -n /tmp/openwrt-ipq40xx-generic-meraki_mr20-squashfs-sysupgrade.bin"
+```
+
+* OpenWrt should now be installed on the device.
+
+Signed-off-by: Hal Martin <hal.martin@gmail.com>
+Link: https://github.com/openwrt/openwrt/pull/20646
+Signed-off-by: Robert Marko <robimarko@gmail.com>
+---
+ package/firmware/ipq-wifi/Makefile            |   2 +
+ .../ipq40xx/base-files/etc/board.d/02_network |   1 +
+ .../base-files/lib/upgrade/platform.sh        |   1 +
+ .../qcom/qcom-ipq4029-meraki-underdog.dtsi    | 101 ++++++++++++++++++
+ .../arm/boot/dts/qcom/qcom-ipq4029-mr20.dts   |  59 ++++++++++
+ target/linux/ipq40xx/image/generic.mk         |   8 ++
+ 6 files changed, 172 insertions(+)
+ create mode 100644 target/linux/ipq40xx/files-6.12/arch/arm/boot/dts/qcom/qcom-ipq4029-meraki-underdog.dtsi
+ create mode 100644 target/linux/ipq40xx/files-6.12/arch/arm/boot/dts/qcom/qcom-ipq4029-mr20.dts
+
+diff --git a/package/firmware/ipq-wifi/Makefile b/package/firmware/ipq-wifi/Makefile
+index d447eef73e5..bbc26c6fb25 100644
+--- a/package/firmware/ipq-wifi/Makefile
++++ b/package/firmware/ipq-wifi/Makefile
+@@ -60,6 +60,7 @@ ALLWIFIBOARDS:= \
+ 	linksys_spnmx56 \
+ 	linksys_whw03 \
+ 	meraki_mr30h \
++	meraki_underdog \
+ 	meraki_z3 \
+ 	netgear_lbr20 \
+ 	netgear_rax120v2 \
+@@ -243,6 +244,7 @@ $(eval $(call generate-ipq-wifi-package,linksys_mx8500,Linksys MX8500))
+ $(eval $(call generate-ipq-wifi-package,linksys_spnmx56,Linksys SPNMX56))
+ $(eval $(call generate-ipq-wifi-package,linksys_whw03,Linksys WHW03))
+ $(eval $(call generate-ipq-wifi-package,meraki_mr30h,Meraki MR30H))
++$(eval $(call generate-ipq-wifi-package,meraki_underdog,Meraki underdog))
+ $(eval $(call generate-ipq-wifi-package,meraki_z3,Meraki Z3))
+ $(eval $(call generate-ipq-wifi-package,netgear_lbr20,Netgear LBR20))
+ $(eval $(call generate-ipq-wifi-package,netgear_rax120v2,Netgear RAX120v2))
+diff --git a/target/linux/ipq40xx/base-files/etc/board.d/02_network b/target/linux/ipq40xx/base-files/etc/board.d/02_network
+index cca50e621f1..3c4cfda2432 100644
+--- a/target/linux/ipq40xx/base-files/etc/board.d/02_network
++++ b/target/linux/ipq40xx/base-files/etc/board.d/02_network
+@@ -57,6 +57,7 @@ ipq40xx_setup_interfaces()
+ 	dlink,dap-2610|\
+ 	engenius,eap1300|\
+ 	extreme-networks,ws-ap3915i|\
++	meraki,mr20|\
+ 	meraki,mr33|\
+ 	meraki,mr74|\
+ 	mikrotik,lhgg-60ad|\
+diff --git a/target/linux/ipq40xx/base-files/lib/upgrade/platform.sh b/target/linux/ipq40xx/base-files/lib/upgrade/platform.sh
+index 7db23a1c77d..9fca8edc1d8 100644
+--- a/target/linux/ipq40xx/base-files/lib/upgrade/platform.sh
++++ b/target/linux/ipq40xx/base-files/lib/upgrade/platform.sh
+@@ -178,6 +178,7 @@ platform_do_upgrade() {
+ 	linksys,whw03)
+ 		platform_do_upgrade_linksys_emmc "$1"
+ 		;;
++	meraki,mr20|\
+ 	meraki,gx20|\
+ 	meraki,z3)
+ 		# DO NOT set CI_KERNPART to part.safe,
+diff --git a/target/linux/ipq40xx/files-6.12/arch/arm/boot/dts/qcom/qcom-ipq4029-meraki-underdog.dtsi b/target/linux/ipq40xx/files-6.12/arch/arm/boot/dts/qcom/qcom-ipq4029-meraki-underdog.dtsi
+new file mode 100644
+index 00000000000..1c2fcdaa229
+--- /dev/null
++++ b/target/linux/ipq40xx/files-6.12/arch/arm/boot/dts/qcom/qcom-ipq4029-meraki-underdog.dtsi
+@@ -0,0 +1,101 @@
++// SPDX-License-Identifier: GPL-2.0-only
++/*
++ * Device Tree Source for Meraki devices
++ *
++ * Copyright (C) 2017 Chris Blake <chrisrblake93@gmail.com>
++ * Copyright (C) 2017 Christian Lamparter <chunkeey@googlemail.com>
++ * Copyright (C) 2025 Hal Martin <halmartin@googlemail.com>
++ *
++ * Based on Cisco Meraki DTS from GPL release r25-linux-3.14-20170427
++ *
++ * This file is licensed under the terms of the GNU General Public
++ * License version 2.  This program is licensed "as is" without
++ * any warranty of any kind, whether express or implied.
++ */
++
++#include "qcom-ipq4029-meraki-common.dtsi"
++
++/ {
++	aliases {
++		led-boot = &status_green;
++		led-failsafe = &status_red;
++		led-running = &status_green;
++		led-upgrade = &power_orange;
++	};
++
++	leds {
++		compatible = "gpio-leds";
++
++		power_orange: power {
++			function = LED_FUNCTION_POWER;
++			color = <LED_COLOR_ID_ORANGE>;
++			gpios = <&tlmm 49 GPIO_ACTIVE_HIGH>;
++			panic-indicator;
++		};
++	};
++};
++
++&blsp1_i2c3 {
++	eeprom@56 {
++		compatible = "atmel,24c64";
++		pagesize = <32>;
++		reg = <0x56>;
++		read-only; /* This holds our MAC & Meraki board-data */
++
++		nvmem-layout {
++			compatible = "fixed-layout";
++			#address-cells = <1>;
++			#size-cells = <1>;
++
++			mac_address: mac-address@66 {
++				compatible = "mac-base";
++				reg = <0x66 0x6>;
++				#nvmem-cell-cells = <1>;
++			};
++		};
++	};
++};
++
++&tlmm {
++	i2c_0_pins: i2c_0_pinmux {
++		function = "blsp_i2c0";
++		pins = "gpio10", "gpio11";
++		drive-strength = <16>;
++		bias-disable;
++	};
++};
++
++&mdio {
++	ethernet-phy-package@0 {
++		status = "disabled";
++	};
++};
++
++&switch {
++	/delete-property/ psgmii-ethphy;
++};
++
++&ethphy0 {
++	status = "disabled";
++};
++
++&ethphy1 {
++	status = "disabled";
++};
++
++&ethphy2 {
++	status = "disabled";
++};
++
++&ethphy3 {
++	status = "disabled";
++};
++
++&ethphy4 {
++	status = "disabled";
++};
++
++&psgmiiphy {
++	status = "disabled";
++};
++
+diff --git a/target/linux/ipq40xx/files-6.12/arch/arm/boot/dts/qcom/qcom-ipq4029-mr20.dts b/target/linux/ipq40xx/files-6.12/arch/arm/boot/dts/qcom/qcom-ipq4029-mr20.dts
+new file mode 100644
+index 00000000000..9c50b10655e
+--- /dev/null
++++ b/target/linux/ipq40xx/files-6.12/arch/arm/boot/dts/qcom/qcom-ipq4029-mr20.dts
+@@ -0,0 +1,59 @@
++// SPDX-License-Identifier: GPL-2.0-only
++// Device Tree Source for Meraki MR20 (Grub) / Go GR10 (Maggot)
++
++#include "qcom-ipq4029-meraki-underdog.dtsi"
++
++/ {
++	model = "Meraki MR20";
++	compatible = "meraki,mr20";
++
++	leds {
++		compatible = "gpio-leds";
++
++		status_green: led_green {
++			color = <LED_COLOR_ID_GREEN>;
++			gpios = <&tlmm 34 GPIO_ACTIVE_HIGH>;
++		};
++
++		status_blue: led_blue {
++			color = <LED_COLOR_ID_BLUE>;
++			gpios = <&tlmm 35 GPIO_ACTIVE_HIGH>;
++		};
++
++		status_red: led_red {
++			color = <LED_COLOR_ID_RED>;
++			gpios = <&tlmm 8 GPIO_ACTIVE_HIGH>;
++		};
++
++	};
++
++	soc {
++		ess_tcsr@1953000 {
++			qcom,ess-interface-select = <TCSR_ESS_PSGMII_RGMII5>;
++		};
++	};
++};
++
++&mdio {
++	ar8035: ethernet-phy@0 {
++		compatible = "ethernet-phy-ieee802.3-c22";
++		reg = <0>;
++	};
++};
++
++&swport5 {
++	status = "okay";
++	label = "lan";
++	phy-handle = <&ar8035>;
++	phy-mode = "rgmii-id";
++};
++
++&wifi0 {
++	status = "okay";
++	qcom,ath10k-calibration-variant = "Meraki-underdog";
++};
++
++&wifi1 {
++	status = "okay";
++	qcom,ath10k-calibration-variant = "Meraki-underdog";
++};
+diff --git a/target/linux/ipq40xx/image/generic.mk b/target/linux/ipq40xx/image/generic.mk
+index f89df0150b1..c7587f0ad0b 100644
+--- a/target/linux/ipq40xx/image/generic.mk
++++ b/target/linux/ipq40xx/image/generic.mk
+@@ -820,6 +820,14 @@ define Device/meraki_common
+ 	DEVICE_PACKAGES := ath10k-firmware-qca9887-ct
+ endef
+ 
++define Device/meraki_mr20
++	$(call Device/meraki_common)
++	DEVICE_MODEL := MR20
++	DEVICE_DTS_CONFIG := config@4
++	DEVICE_PACKAGES := ipq-wifi-meraki_underdog
++endef
++TARGET_DEVICES += meraki_mr20
++
+ define Device/meraki_mr30h
+ 	$(call Device/meraki_common)
+ 	DEVICE_MODEL := MR30H

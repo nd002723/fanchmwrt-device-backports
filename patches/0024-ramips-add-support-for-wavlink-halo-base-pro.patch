@@ -1,0 +1,279 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: William Latter <williamlatter77@gmail.com>
+Date: Fri, 13 Mar 2026 19:09:30 +1100
+Subject: [PATCH 24/76] ramips: add support for wavlink halo base pro
+
+This adds support for the Wavlink "Halo Base Pro".
+SOC: MT7621DAT
+RAM: 128MiB
+Flash: 16MiB NOR
+WiFi: MT7603EN + MT7613BEN
+
+Buttons:
+- The touch sensor was originally for WPS, but this has been moved to the
+pair button which is no longer used to prevent accidental touches
+
+LEDs:
+- On original firmware, the status LEDs light up as follows:
+- Purple = booting, Blue = working, Red = error
+
+Partitions:
+- factory contains unique WiFi EEPROM and default MAC addresses
+- vendor partition has an unknown purpose
+
+Stock MAC address allocation:
+- LAN1:				xx:xx:xx:xx:xx:80
+- LAN2/WAN:		xx:xx:xx:xx:xx:81
+- WiFi 2.4G:	xx:xx:xx:xx:xx:82
+- WiFi 5G:		xx:xx:xx:xx:xx:83
+
+LAN Ports:
+- lan1 is the normal white LAN port
+- lan2 is labelled "LAN/Backhaul", which can either be LAN or WAN.
+	- Since this device is intended to be part of a mesh, this will usually
+		be a LAN port, hence why it's assigned to lan2 here
+
+Notes:
+- I've chosen "Halo Base Pro" as the device model, despite the website URL
+showing WL-WN535M3, as the label only states "Halo Base Pro".
+- Only the 5GHz WiFi address is labelled on the device
+
+Signed-off-by: William Latter <williamlatter77@gmail.com>
+Link: https://github.com/openwrt/openwrt/pull/22400
+Signed-off-by: Hauke Mehrtens <hauke@hauke-m.de>
+---
+ .../dts/mt7621_wavlink_halo-base-pro.dts      | 188 ++++++++++++++++++
+ target/linux/ramips/image/mt7621.mk           |  10 +
+ .../mt7621/base-files/etc/board.d/02_network  |   3 +-
+ 3 files changed, 200 insertions(+), 1 deletion(-)
+ create mode 100644 target/linux/ramips/dts/mt7621_wavlink_halo-base-pro.dts
+
+diff --git a/target/linux/ramips/dts/mt7621_wavlink_halo-base-pro.dts b/target/linux/ramips/dts/mt7621_wavlink_halo-base-pro.dts
+new file mode 100644
+index 00000000000..161966c3090
+--- /dev/null
++++ b/target/linux/ramips/dts/mt7621_wavlink_halo-base-pro.dts
+@@ -0,0 +1,188 @@
++// SPDX-License-Identifier: GPL-2.0-or-later OR MIT
++
++#include "mt7621.dtsi"
++#include <dt-bindings/gpio/gpio.h>
++#include <dt-bindings/leds/common.h>
++#include <dt-bindings/input/input.h>
++
++/ {
++	compatible = "wavlink,halo-base-pro", "mediatek,mt7621-soc";
++	model = "Wavlink Halo Base Pro";
++
++	chosen {
++		bootargs = "console=ttyS0,57600n8";
++	};
++
++	aliases {
++		led-boot = &status_blue;
++		led-failsafe = &status_red;
++		led-running = &status_blue;
++		led-upgrade = &status_red;
++		label-mac-device = &wifi;
++	};
++
++	keys {
++		compatible = "gpio-keys";
++
++		pair {
++				label = "pair";
++				gpios = <&gpio 13 GPIO_ACTIVE_LOW>;
++				linux,code = <KEY_WPS_BUTTON>;
++		};
++
++		touch {
++				label = "touch";
++				gpios = <&gpio 14 GPIO_ACTIVE_LOW>;
++				linux,code = <BTN_0>;
++		};
++
++		reset {
++				label = "reset";
++				gpios = <&gpio 18 GPIO_ACTIVE_LOW>;
++				linux,code = <KEY_RESTART>;
++		};
++	};
++
++	leds {
++		compatible = "gpio-leds";
++
++		status_blue: status_blue {
++				color = <LED_COLOR_ID_BLUE>;
++				function = LED_FUNCTION_STATUS;
++				gpios = <&gpio 16 GPIO_ACTIVE_HIGH>;
++		};
++
++		status_red: status_red {
++				color = <LED_COLOR_ID_RED>;
++				function = LED_FUNCTION_STATUS;
++				gpios = <&gpio 17 GPIO_ACTIVE_HIGH>;
++		};
++	};
++};
++
++&spi0 {
++	status = "okay";
++
++	flash@0 {
++		compatible = "jedec,spi-nor";
++		reg = <0>;
++		spi-max-frequency = <40000000>;
++
++		partitions {
++			compatible = "fixed-partitions";
++			#address-cells = <1>;
++			#size-cells = <1>;
++
++			partition@0 {
++				label = "u-boot";
++				reg = <0x0 0x30000>;
++				read-only;
++			};
++
++			partition@30000 {
++				label = "u-boot-env";
++				reg = <0x30000 0x10000>;
++				compatible = "u-boot,env";
++				read-only;
++			};
++
++			partition@40000 {
++				label = "factory";
++				reg = <0x40000 0x10000>;
++				read-only;
++
++				nvmem-layout {
++					compatible = "fixed-layout";
++					#address-cells = <1>;
++					#size-cells = <1>;
++
++					eeprom_factory_0: eeprom@0 {
++						reg = <0x0 0x400>;
++					};
++
++					eeprom_factory_8000: eeprom@8000 {
++						reg = <0x8000 0x4da8>;
++					};
++
++					macaddr_factory_8004: macaddr@8004 {
++						reg = <0x8004 0x6>;
++					};
++
++					macaddr_factory_e000: macaddr@e000 {
++						reg = <0xe000 0x6>;
++					};
++
++					macaddr_factory_e006: macaddr@e006 {
++						reg = <0xe006 0x6>;
++					};
++				};
++			};
++
++			partition@50000 {
++				compatible = "denx,uimage";
++				label = "firmware";
++				reg = <0x50000 0xf30000>;
++			};
++
++			partition@f80000 {
++				label = "vendor";
++				reg = <0xf80000 0x80000>;
++				read-only;
++			};
++		};
++	};
++};
++
++&gmac0 {
++	nvmem-cells = <&macaddr_factory_e000>;
++	nvmem-cell-names = "mac-address";
++};
++
++&pcie {
++	status = "okay";
++};
++
++&pcie0 {
++	wifi@0,0 {
++		compatible = "mediatek,mt76";
++		reg = <0x0000 0 0 0 0>;
++		nvmem-cells = <&eeprom_factory_0>;
++		nvmem-cell-names = "eeprom";
++		ieee80211-freq-limit = <2400000 2500000>;
++	};
++};
++
++&pcie1 {
++	wifi: wifi@0,0 {
++		compatible = "mediatek,mt76";
++		reg = <0x0000 0 0 0 0>;
++		nvmem-cells = <&eeprom_factory_8000>, <&macaddr_factory_8004>;
++		nvmem-cell-names = "eeprom", "mac-address";
++		ieee80211-freq-limit = <5000000 6000000>;
++	};
++};
++
++&switch0 {
++	ports {
++		port@0 {
++			status = "okay";
++			label = "lan1";
++			nvmem-cells = <&macaddr_factory_e000>;
++			nvmem-cell-names = "mac-address";
++		};
++
++		port@4 {
++			status = "okay";
++			label = "lan2";
++			nvmem-cells = <&macaddr_factory_e006>;
++			nvmem-cell-names = "mac-address";
++		};
++	};
++};
++
++&state_default {
++	gpio {
++		groups = "jtag", "wdt";
++		function = "gpio";
++	};
++};
+diff --git a/target/linux/ramips/image/mt7621.mk b/target/linux/ramips/image/mt7621.mk
+index 26a54b5b1af..77448610f9f 100644
+--- a/target/linux/ramips/image/mt7621.mk
++++ b/target/linux/ramips/image/mt7621.mk
+@@ -3278,6 +3278,16 @@ define Device/unielec_u7621-06-64m
+ endef
+ TARGET_DEVICES += unielec_u7621-06-64m
+ 
++define Device/wavlink_halo-base-pro
++  $(Device/dsa-migration)
++  IMAGE_SIZE := 15552k
++  DEVICE_VENDOR := Wavlink
++  DEVICE_MODEL := Halo Base Pro
++  KERNEL := kernel-bin | append-dtb | lzma | uImage lzma | pad-to 64k
++  DEVICE_PACKAGES := kmod-mt7603 kmod-mt7615-firmware kmod-mt7663-firmware-ap
++endef
++TARGET_DEVICES += wavlink_halo-base-pro
++
+ define Device/wavlink_wl-wn531a6
+   $(Device/dsa-migration)
+   DEVICE_VENDOR := Wavlink
+diff --git a/target/linux/ramips/mt7621/base-files/etc/board.d/02_network b/target/linux/ramips/mt7621/base-files/etc/board.d/02_network
+index 69d954aaf08..39800ffd7f7 100644
+--- a/target/linux/ramips/mt7621/base-files/etc/board.d/02_network
++++ b/target/linux/ramips/mt7621/base-files/etc/board.d/02_network
+@@ -139,7 +139,8 @@ ramips_setup_interfaces()
+ 	zyxel,lte3301-plus)
+ 		ucidef_set_interface_lan "lan1 lan2 lan3 lan4"
+ 		;;
+-	elecom,wsc-x1800gs)
++	elecom,wsc-x1800gs|\
++	wavlink,halo-base-pro)
+ 		ucidef_set_interface_lan "lan1 lan2"
+ 		;;
+ 	gnubee,gb-pc1)

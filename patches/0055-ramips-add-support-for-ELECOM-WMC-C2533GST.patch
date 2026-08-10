@@ -1,0 +1,143 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Taiga Ogawa <zectaiga@gmail.com>
+Date: Tue, 26 May 2026 04:04:47 +0000
+Subject: [PATCH 55/76] ramips: add support for ELECOM WMC-C2533GST
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+ELECOM WMC-C2533GST is a 2.4/5 GHz band 11ac (Wi-Fi 5) mesh
+router, based on MT7621A.
+
+It shares the same basic hardware and 32 MiB flash layout as
+WRC-2533GST2, but the factory image uses the WMC-2HC hardware name.
+
+Specification:
+
+- SoC           : MediaTek MT7621A
+- RAM           : DDR3 256 MiB
+- Flash         : SPI-NOR 32 MiB (Macronix MX25L25635E)
+- WLAN          : 2.4/5 GHz 4T4R (2x MediaTek MT7615)
+- Ethernet      : 10/100/1000 Mbps x5
+  - Switch      : MediaTek MT7530 (SoC)
+- LED/keys      : 4x/6x (2x buttons, 1x slide-switch)
+- UART          : through-hole on PCB
+  - J4: 3.3V, GND, TX, RX from ethernet port side
+  - 57600n8
+- Power         : 12VDC, 1.5A
+
+Flash instruction using factory image:
+
+1. Boot WMC-C2533GST normally with "Router" mode
+2. Access to "http://192.168.2.1/" and open firmware update page
+   ("ファームウェア更新")
+3. Select the OpenWrt factory image and click apply ("適用") button
+4. Wait ~150 seconds to complete flashing
+
+MAC addresses:
+
+LAN     : 04:AB:18:xx:xx:BF (Factory, 0xFFF4 (hex))
+WAN     : 04:AB:18:xx:xx:C0 (Factory, 0xFFFA (hex))
+2.4GHz  : 04:AB:18:xx:xx:C1 (Factory, 0x4    (hex))
+5GHz    : 04:AB:18:xx:xx:C2 (Factory, 0x8004 (hex))
+
+Signed-off-by: Taiga Ogawa <zectaiga@gmail.com>
+Link: https://github.com/openwrt/openwrt/pull/23568
+Signed-off-by: Jonas Jelonek <jelonek.jonas@gmail.com>
+---
+ .../ramips/dts/mt7621_elecom_wmc-c2533gst.dts | 66 +++++++++++++++++++
+ target/linux/ramips/image/mt7621.mk           |  8 +++
+ 2 files changed, 74 insertions(+)
+ create mode 100644 target/linux/ramips/dts/mt7621_elecom_wmc-c2533gst.dts
+
+diff --git a/target/linux/ramips/dts/mt7621_elecom_wmc-c2533gst.dts b/target/linux/ramips/dts/mt7621_elecom_wmc-c2533gst.dts
+new file mode 100644
+index 00000000000..a86e4f3b4f9
+--- /dev/null
++++ b/target/linux/ramips/dts/mt7621_elecom_wmc-c2533gst.dts
+@@ -0,0 +1,66 @@
++// SPDX-License-Identifier: GPL-2.0-or-later OR MIT
++
++#include "mt7621_elecom_wrc-gs-2pci.dtsi"
++
++/ {
++	compatible = "elecom,wmc-c2533gst", "mediatek,mt7621-soc";
++	model = "ELECOM WMC-C2533GST";
++};
++
++&partitions {
++	partition@50000 {
++		compatible = "denx,uimage";
++		label = "firmware";
++		reg = <0x50000 0x1800000>;
++	};
++
++	partition@1850000 {
++		label = "tm_pattern";
++		reg = <0x1850000 0x400000>;
++		read-only;
++	};
++
++	partition@1c50000 {
++		label = "tm_key";
++		reg = <0x1c50000 0x100000>;
++		read-only;
++	};
++
++	partition@1d50000 {
++		label = "nvram";
++		reg = <0x1d50000 0xb0000>;
++		read-only;
++	};
++
++	partition@1e00000 {
++		label = "user_data";
++		reg = <0x1e00000 0x200000>;
++		read-only;
++	};
++};
++
++&gmac0 {
++	nvmem-cells = <&macaddr_factory_fff4>;
++	nvmem-cell-names = "mac-address";
++};
++
++&gmac1 {
++	nvmem-cells = <&macaddr_factory_fffa>;
++	nvmem-cell-names = "mac-address";
++};
++
++&factory {
++	nvmem-layout {
++		compatible = "fixed-layout";
++		#address-cells = <1>;
++		#size-cells = <1>;
++
++		macaddr_factory_fff4: macaddr@fff4 {
++			reg = <0xfff4 0x6>;
++		};
++
++		macaddr_factory_fffa: macaddr@fffa {
++			reg = <0xfffa 0x6>;
++		};
++	};
++};
+diff --git a/target/linux/ramips/image/mt7621.mk b/target/linux/ramips/image/mt7621.mk
+index ce68c97cd76..347ab0eab3d 100644
+--- a/target/linux/ramips/image/mt7621.mk
++++ b/target/linux/ramips/image/mt7621.mk
+@@ -1279,6 +1279,14 @@ define Device/elecom_wrc-gs
+   DEVICE_PACKAGES := kmod-mt7615-firmware -uboot-envtools
+ endef
+ 
++define Device/elecom_wmc-c2533gst
++  $(Device/elecom_wrc-gs)
++  IMAGE_SIZE := 24576k
++  DEVICE_MODEL := WMC-C2533GST
++  ELECOM_HWNAME := WMC-2HC
++endef
++TARGET_DEVICES += elecom_wmc-c2533gst
++
+ define Device/elecom_wmc-m1267gst2
+   $(Device/elecom_wrc-gs)
+   IMAGE_SIZE := 24576k

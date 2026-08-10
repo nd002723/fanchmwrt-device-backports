@@ -1,0 +1,790 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Milan Krstic <milan.krstic@gmail.com>
+Date: Fri, 13 Jun 2025 14:49:18 +0000
+Subject: [PATCH 09/76] qualcommax: ipq807x: add support for TCL LINKHUB HH500V
+
+TCL LINKHUB HH500V also known as Vodafone Gigacube B157 is a dual band
+802.11ax 5G NR CPE with an FXS port.
+
+Specifications:
+* SoC: Qualcomm IPQ8072A
+* RAM: 1024 MB
+* NAND flash: 256MB NAND (MT29F2G08ABBGAH4)
+* NOR flash: 64MB NOR (MX25U25635F) - only in some variants
+* WiFi 5G: Qualcomm QCN5054
+* WiFi 2.4G: Qualcomm QCN5024
+* Ethernet 2.5G: Qualcomm QCA8081
+* Ethernet 1G: Qualcomm QCA8075
+* Modem: GosunCn GM800 (Qualcomm Snapdragon X55)
+* SIM: 1 nano-SIM card slot
+* Buttons: Power, Reset, WPS
+* LEDs: Power (B/R), WiFi (B), 4G (B/Y/R), 5G (B/Y/R)
+* VoIP: 1 FXS RJ11 port (not supported in OpenWrt)
+* Power: 12V, 3A
+
+UART serial console:
+
+* 115200,8N1,1.8V
+* Three unmarked test points next to QJ2012A:
+
+ +---------+
+ | QJ2012A |
+ +---------+
+ o TX
+ o GND
+ o RX
+ o
+ o
+ o
+
+Installation via OEM firmware:
+
+* Use the following process to obtain root ssh access
+https://forum.openwrt.org/t/150371/24
+* Connect using root with no password on port 42000
+* Optionally for serial bootloader access run :
+fw_setenv bootdelay=3
+* SCP factory.bin to /tmp
+* Run:
+sysupgrade -n /tmp/factory.bin
+
+Installation via serial console and OEM firmware::
+
+* Use console to access OEM firmware shell
+* Proceed with SCP & sysupgrade as described above
+
+Other notes:
+
+* This device uses active partition rotation
+* Some versions (TCL branded?) have a NOR chip in addition to NAND
+* The above is supported by u-boot patching DT partitions
+* DT patching does NOT occur on tftpboot/bootm
+* Modem is detected as foxconn-sdx55 by kernel (same VID/PID)
+* This works OK-ish and should be improved if we can get OEM modem details
+
+Signed-off-by: Milan Krstic <milan.krstic@gmail.com>
+Link: https://github.com/openwrt/openwrt/pull/19182
+Signed-off-by: Robert Marko <robimarko@gmail.com>
+---
+ .../uboot-envtools/files/qualcommax_ipq807x   |  22 +
+ package/firmware/ipq-wifi/Makefile            |   2 +
+ target/linux/qualcommax/config-6.12           |   2 +
+ .../boot/dts/qcom/ipq8072-linkhub-hh500v.dts  | 400 ++++++++++++++++++
+ target/linux/qualcommax/image/ipq807x.mk      |  15 +
+ .../ipq807x/base-files/etc/board.d/01_leds    |   3 +
+ .../ipq807x/base-files/etc/board.d/02_network |   5 +
+ .../etc/hotplug.d/firmware/11-ath11k-caldata  |   6 +
+ .../ipq807x/base-files/etc/init.d/modem       |  22 +
+ .../base-files/lib/upgrade/platform.sh        |   4 +
+ .../ipq807x/base-files/lib/upgrade/tcl.sh     |  91 ++++
+ 11 files changed, 572 insertions(+)
+ create mode 100644 target/linux/qualcommax/files/arch/arm64/boot/dts/qcom/ipq8072-linkhub-hh500v.dts
+ create mode 100755 target/linux/qualcommax/ipq807x/base-files/etc/init.d/modem
+ create mode 100644 target/linux/qualcommax/ipq807x/base-files/lib/upgrade/tcl.sh
+
+diff --git a/package/boot/uboot-tools/uboot-envtools/files/qualcommax_ipq807x b/package/boot/uboot-tools/uboot-envtools/files/qualcommax_ipq807x
+index 46a7111c1be..c95495a19ef 100644
+--- a/package/boot/uboot-tools/uboot-envtools/files/qualcommax_ipq807x
++++ b/package/boot/uboot-tools/uboot-envtools/files/qualcommax_ipq807x
+@@ -7,6 +7,25 @@ touch /etc/config/ubootenv
+ 
+ board=$(board_name)
+ 
++ubootenv_mtdinfo () {
++	UBOOTENV_PART=$(cat /proc/mtd | grep -i APPSBLENV)
++	mtd_dev=$(echo $UBOOTENV_PART | awk '{print $1}' | sed 's/:$//')
++	mtd_size=$(echo $UBOOTENV_PART | awk '{print "0x"$2}')
++	mtd_erase=$(echo $UBOOTENV_PART | awk '{print "0x"$3}')
++	nor_flash=$(find /sys/bus/spi/devices/*/mtd -name ${mtd_dev})
++
++	if [ -n "$nor_flash" ]; then
++		ubootenv_size=$mtd_size
++	else
++		# size is fixed to 0x40000 in u-boot
++		ubootenv_size=0x40000
++	fi
++
++	sectors=$(( $ubootenv_size / $mtd_erase ))
++	sectors=$(printf "0x%x" $sectors )
++	echo /dev/$mtd_dev 0x0 $ubootenv_size $mtd_erase $sectors
++}
++
+ case "$board" in
+ aliyun,ap8220|\
+ compex,wpq873|\
+@@ -58,6 +77,9 @@ xiaomi,ax9000)
+ spectrum,sax1v1k)
+ 	ubootenv_add_mmc "0:APPSBLENV" "" "0x0" "0x40000" "0x40000" "1"
+ 	;;
++tcl,linkhub-hh500v)
++	ubootenv_add_uci_config $(ubootenv_mtdinfo)
++	;;
+ esac
+ 
+ config_load ubootenv
+diff --git a/package/firmware/ipq-wifi/Makefile b/package/firmware/ipq-wifi/Makefile
+index 398915b961d..d82e1b43771 100644
+--- a/package/firmware/ipq-wifi/Makefile
++++ b/package/firmware/ipq-wifi/Makefile
+@@ -81,6 +81,7 @@ ALLWIFIBOARDS:= \
+ 	redmi_ax6 \
+ 	skspruce_wia3300-20 \
+ 	spectrum_sax1v1k \
++	tcl_linkhub-hh500v \
+ 	tplink_deco-x80-5g \
+ 	tplink_eap610-outdoor \
+ 	tplink_eap620hd-v1 \
+@@ -268,6 +269,7 @@ $(eval $(call generate-ipq-wifi-package,prpl_haze,prpl Haze))
+ $(eval $(call generate-ipq-wifi-package,redmi_ax6,Redmi AX6))
+ $(eval $(call generate-ipq-wifi-package,skspruce_wia3300-20,SKSpruce WIA3300-20))
+ $(eval $(call generate-ipq-wifi-package,spectrum_sax1v1k,Spectrum SAX1V1K))
++$(eval $(call generate-ipq-wifi-package,tcl_linkhub-hh500v,TCL LINKHUB HH500V))
+ $(eval $(call generate-ipq-wifi-package,tplink_deco-x80-5g,TP-Link Deco X80-5G))
+ $(eval $(call generate-ipq-wifi-package,tplink_eap610-outdoor,TPLink EAP610-Outdoor))
+ $(eval $(call generate-ipq-wifi-package,tplink_eap620hd-v1,TP-Link EAP620 HD v1))
+diff --git a/target/linux/qualcommax/config-6.12 b/target/linux/qualcommax/config-6.12
+index d0dd32a0aa6..e75cd8b1d19 100644
+--- a/target/linux/qualcommax/config-6.12
++++ b/target/linux/qualcommax/config-6.12
+@@ -358,6 +358,7 @@ CONFIG_PHY_QCOM_QUSB2=y
+ # CONFIG_PHY_QCOM_USB_SNPS_FEMTO_V2 is not set
+ # CONFIG_PHY_QCOM_USB_SS is not set
+ CONFIG_PINCTRL=y
++CONFIG_PINCTRL_AW9523=y
+ # CONFIG_PINCTRL_IPQ5018 is not set
+ # CONFIG_PINCTRL_IPQ5332 is not set
+ # CONFIG_PINCTRL_IPQ6018 is not set
+@@ -395,6 +396,7 @@ CONFIG_PM_CLK=y
+ CONFIG_PM_OPP=y
+ CONFIG_POSIX_CPU_TIMERS_TASK_WORK=y
+ CONFIG_POWER_RESET=y
++CONFIG_POWER_RESET_GPIO=y
+ # CONFIG_POWER_RESET_MSM is not set
+ CONFIG_POWER_SUPPLY=y
+ CONFIG_PRINTK_TIME=y
+diff --git a/target/linux/qualcommax/files/arch/arm64/boot/dts/qcom/ipq8072-linkhub-hh500v.dts b/target/linux/qualcommax/files/arch/arm64/boot/dts/qcom/ipq8072-linkhub-hh500v.dts
+new file mode 100644
+index 00000000000..2a91807bdda
+--- /dev/null
++++ b/target/linux/qualcommax/files/arch/arm64/boot/dts/qcom/ipq8072-linkhub-hh500v.dts
+@@ -0,0 +1,400 @@
++// SPDX-License-Identifier: GPL-2.0-or-later OR MIT
++
++/dts-v1/;
++
++#include "ipq8074.dtsi"
++#include "ipq8074-hk-cpu.dtsi"
++#include "ipq8074-ess.dtsi"
++#include <dt-bindings/gpio/gpio.h>
++#include <dt-bindings/input/input.h>
++#include <dt-bindings/leds/common.h>
++
++/ {
++	model = "TCL LINKHUB HH500V";
++	compatible = "tcl,linkhub-hh500v", "qcom,ipq8074";
++
++	aliases {
++		led-boot = &led_power_blue;
++		led-failsafe = &led_power_red;
++		led-running = &led_power_blue;
++		led-upgrade = &led_power_red;
++		serial0 = &blsp1_uart5;
++		serial1 = &blsp1_uart3;
++	};
++
++	chosen {
++		stdout-path = "serial0:115200n8";
++		bootargs-append = " root=/dev/ubiblock0_1";
++	};
++
++	modem {
++		compatible = "gpio-export";
++		pinctrl-names = "default";
++		pinctrl-0 = <&modem_pins>;
++
++		/* output low = download mode */
++		modem-edl {
++			gpio-export,name = "modem_edl";
++			gpio-export,output = <1>;
++			gpios = <&tlmm 46 GPIO_ACTIVE_HIGH>;
++		};
++
++		/* output high = power on, output low = no power on after reset */
++		modem-power {
++			gpio-export,name = "modem_power";
++			gpio-export,output = <1>;
++			gpios = <&tlmm 30 GPIO_ACTIVE_HIGH>;
++		};
++
++		/* output low 5s pulse = reset */
++		modem-reset {
++			gpio-export,name = "modem_reset";
++			gpio-export,output = <1>;
++			gpios = <&tlmm 29 GPIO_ACTIVE_HIGH>;
++		};
++	};
++
++	gpio-poweroff {
++		compatible = "gpio-poweroff";
++		gpios = <&tlmm 20 GPIO_ACTIVE_HIGH>;
++	};
++
++	keys {
++		compatible = "gpio-keys";
++		pinctrl-0 = <&button_pins>;
++		pinctrl-names = "default";
++
++		reset {
++			label = "reset";
++			linux,code = <KEY_RESTART>;
++			gpios = <&tlmm 47 GPIO_ACTIVE_LOW>;
++		};
++
++		wps {
++			label = "wps";
++			linux,code = <KEY_WPS_BUTTON>;
++			gpios = <&tlmm 64 GPIO_ACTIVE_LOW>;
++		};
++
++		power {
++			label = "power";
++			gpios = <&tlmm 62 GPIO_ACTIVE_LOW>;
++			linux,code = <KEY_POWER>;
++		};
++	};
++
++	leds {
++		compatible = "gpio-leds";
++		pinctrl-names = "default";
++		pinctrl-0 = <&led_pins>;
++
++		4g_green {
++			color = <LED_COLOR_ID_GREEN>;
++			function = "4g";
++			gpios = <&aw9523 0 GPIO_ACTIVE_LOW>;
++		};
++
++		4g_blue {
++			color = <LED_COLOR_ID_BLUE>;
++			function = "4g";
++			gpios = <&aw9523 1 GPIO_ACTIVE_LOW>;
++		};
++
++		wifi_blue {
++			color = <LED_COLOR_ID_BLUE>;
++			function = LED_FUNCTION_WLAN;
++			gpios = <&aw9523 3 GPIO_ACTIVE_LOW>;
++		};
++
++		led_power_blue: power_blue {
++			color = <LED_COLOR_ID_BLUE>;
++			function = LED_FUNCTION_POWER;
++			gpios = <&aw9523 5 GPIO_ACTIVE_LOW>;
++		};
++
++		led_power_red: power_red {
++			color = <LED_COLOR_ID_RED>;
++			function = LED_FUNCTION_POWER;
++			gpios = <&aw9523 6 GPIO_ACTIVE_LOW>;
++		};
++
++		5g_red {
++			color = <LED_COLOR_ID_RED>;
++			function = "5g";
++			gpios = <&aw9523 8 GPIO_ACTIVE_LOW>;
++		};
++
++		5g_green {
++			color = <LED_COLOR_ID_GREEN>;
++			function = "5g";
++			gpios = <&aw9523 9 GPIO_ACTIVE_LOW>;
++		};
++
++		5g_blue {
++			color = <LED_COLOR_ID_BLUE>;
++			function = "5g";
++			gpios = <&aw9523 10 GPIO_ACTIVE_LOW>;
++		};
++
++		4g_red {
++			color = <LED_COLOR_ID_RED>;
++			function = "4g";
++			gpios = <&aw9523 11 GPIO_ACTIVE_LOW>;
++		};
++	};
++};
++
++&tlmm {
++	mdio_pins: mdio-pins {
++		mdc {
++			pins = "gpio68";
++			function = "mdc";
++			drive-strength = <8>;
++			bias-pull-up;
++		};
++
++		mdio {
++			pins = "gpio69";
++			function = "mdio";
++			drive-strength = <8>;
++			bias-pull-up;
++		};
++	};
++
++	button_pins: button-pins {
++		bias-pull-up;
++		drive-strength = <8>;
++		function = "gpio";
++		pins = "gpio47", "gpio62", "gpio64";
++	};
++
++	hsuart_pins: hsuart-state {
++		pins = "gpio48", "gpio49";
++	};
++
++	modem_pins: modem-pins {
++		modem_power_on {
++			bias-pull-up;
++			drive-strength = <8>;
++			output-high;
++			pins = "gpio30";
++		};
++
++		modem_reset {
++			drive-strength = <8>;
++			output-high;
++			pins = "gpio29";
++		};
++
++		modem_edl {
++			output-high;
++			pins = "gpio46";
++		};
++	};
++
++	pcie0_default_state: pcie0_wake_gpio {
++			bias-pull-up;
++			drive-strength = <8>;
++			function = "pcie0_wake";
++			pins = "gpio59";
++	};
++};
++
++&blsp1_i2c2 {
++	status = "okay";
++
++	aw9523: gpio-expander@5b {
++		compatible = "awinic,aw9523-pinctrl";
++		reg = <0x5b>;
++		gpio-controller;
++		#gpio-cells = <2>;
++		gpio-ranges = <&aw9523 0 0 16>;
++		reset-gpios = <&tlmm 2 GPIO_ACTIVE_HIGH>;
++
++		led_pins: led-pins {
++			pins =
++				"gpio0", "gpio1", "gpio3", "gpio5", "gpio6",
++				"gpio8", "gpio9", "gpio10", "gpio11";
++			function = "gpio";
++			input-disable;
++			output-low;
++		};
++	};
++};
++
++&blsp1_spi1 {
++	status = "okay";
++
++	flash@0 {
++		#address-cells = <1>;
++		#size-cells = <1>;
++		reg = <0x00>;
++		/* "n25q128a11" required for u-boot patching, see nand node */
++		compatible = "n25q128a11", "jedec,spi-nor";
++		spi-max-frequency = <50000000>;
++
++		partitions {
++			compatible = "fixed-partitions";
++		};
++	};
++};
++
++&blsp1_uart3 {
++	status = "okay";
++};
++
++&blsp1_uart5 {
++	status = "okay";
++};
++
++&cryptobam {
++	status = "okay";
++};
++
++&crypto {
++	status = "okay";
++};
++
++&prng {
++	status = "okay";
++};
++
++&qpic_bam {
++	status = "okay";
++};
++
++&qpic_nand {
++	status = "okay";
++	/*
++	 * Some variants of this board use NOR+NAND configuration which is
++	 * currently not supported by 'qcomsmem' MTD parser while other versions
++	 * have NAND alone. Let U-Boot find the NAND and SPI flash dt nodes and
++	 * populate partitions from SMEM partition table.
++	 *
++	 * This makes it possible to support both flash configurations with a
++	 * single image, and also to use QCA 'runtime failsafe' and rotate
++	 * 'rootfs'/'rootfs_1' partitions between subsequent updates.
++	 */
++	compatible = "qcom,ebi2-nandc-bam-v1.5.0", "qcom,ipq8074-nand";
++
++	nand@0 {
++		#address-cells = <0x01>;
++		#size-cells = <0x01>;
++		nand-bus-width = <8>;
++		nand-ecc-step-size = <512>;
++		nand-ecc-strength = <8>;
++		reg = <0>;
++	};
++};
++
++&qusb_phy_0 {
++	status = "okay";
++};
++
++&qusb_phy_1 {
++	status = "okay";
++};
++
++&ssphy_0 {
++	status = "okay";
++};
++
++&ssphy_1 {
++	status = "okay";
++};
++
++&usb_0 {
++	status = "okay";
++};
++
++&usb_1 {
++	status = "okay";
++};
++
++&mdio {
++	status = "okay";
++
++	pinctrl-0 = <&mdio_pins>;
++	pinctrl-names = "default";
++	reset-gpios = <&tlmm 37 GPIO_ACTIVE_LOW>;
++
++	ethernet-phy-package@0 {
++		compatible = "qcom,qca8075-package";
++		#address-cells = <1>;
++		#size-cells = <0>;
++		reg = <0>;
++
++		qca8075_3: ethernet-phy@3 {
++			compatible = "ethernet-phy-ieee802.3-c22";
++			reg = <3>;
++		};
++	};
++
++	qca8081: ethernet-phy@16 {
++		compatible = "ethernet-phy-id004d.d101";
++		reg = <16>;
++		reset-deassert-us = <10000>;
++		reset-gpios = <&tlmm 44 GPIO_ACTIVE_LOW>;
++	};
++};
++
++&switch {
++	status = "okay";
++
++	switch_lan_bmp = <ESS_PORT4>;
++	switch_wan_bmp = <ESS_PORT6>;
++	switch_mac_mode = <MAC_MODE_PSGMII>;
++	switch_mac_mode2 = <MAC_MODE_SGMII_PLUS>;
++
++	qcom,port_phyinfo {
++			port@4 {
++				phy_address = <3>;
++				port_id = <4>;
++			};
++
++			port@6 {
++				phy_address = <16>;
++				port_id = <6>;
++				port_mac_sel = "QGMAC_PORT";
++			};
++		};
++};
++
++&edma {
++	status = "okay";
++};
++
++&dp4 {
++	status = "okay";
++	phy-handle = <&qca8075_3>;
++	label = "lan";
++};
++
++&dp6_syn {
++	status = "okay";
++	phy-handle = <&qca8081>;
++	label = "wan";
++};
++
++&pcie_qmp0 {
++	status = "okay";
++};
++
++&pcie0 {
++	status = "okay";
++	pinctrl-0 = <&pcie0_default_state>;
++	pinctrl-names = "default";
++	perst-gpio = <&tlmm 58 GPIO_ACTIVE_LOW>;
++
++	pcie@0 {
++		modem@0,0 {
++			reg = <0x00 0x00 0x00 0x00 0x00>;
++		};
++	};
++};
++
++&wifi {
++	status = "okay";
++
++	qcom,ath11k-calibration-variant = "TCL-LINKHUB-HH500V";
++};
+diff --git a/target/linux/qualcommax/image/ipq807x.mk b/target/linux/qualcommax/image/ipq807x.mk
+index f356bbbca52..fa3ab8475eb 100644
+--- a/target/linux/qualcommax/image/ipq807x.mk
++++ b/target/linux/qualcommax/image/ipq807x.mk
+@@ -405,6 +405,21 @@ define Device/spectrum_sax1v1k
+ endef
+ TARGET_DEVICES += spectrum_sax1v1k
+ 
++define Device/tcl_linkhub-hh500v
++	$(call Device/FitImage)
++	$(call Device/UbiFit)
++	DEVICE_VENDOR := TCL
++	DEVICE_MODEL := LINKHUB HH500V
++	BLOCKSIZE := 128k
++	PAGESIZE := 2048
++	DEVICE_DTS_CONFIG := config@hk09
++	SOC := ipq8072
++	IMAGES += factory.bin
++	IMAGE/factory.bin := append-ubi | qsdk-ipq-factory-nand
++	DEVICE_PACKAGES := ipq-wifi-tcl_linkhub-hh500v kmod-mhi-pci-generic \
++		kmod-mhi-wwan-ctrl kmod-mhi-wwan-mbim
++endef
++TARGET_DEVICES += tcl_linkhub-hh500v
+ 
+ define Device/tplink_deco-x80-5g
+ 	$(call Device/FitImage)
+diff --git a/target/linux/qualcommax/ipq807x/base-files/etc/board.d/01_leds b/target/linux/qualcommax/ipq807x/base-files/etc/board.d/01_leds
+index ae941657f94..665b83d56ca 100644
+--- a/target/linux/qualcommax/ipq807x/base-files/etc/board.d/01_leds
++++ b/target/linux/qualcommax/ipq807x/base-files/etc/board.d/01_leds
+@@ -42,6 +42,9 @@ netgear,wax630)
+ redmi,ax6)
+ 	ucidef_set_led_netdev "wan" "WAN" "blue:network" "wan"
+ 	;;
++tcl,linkhub-hh500v)
++	ucidef_set_led_wlan "wlan5g" "WiFi 5GHz" "blue:wlan" "phy0radio"
++	;;
+ xiaomi,ax3600)
+ 	ucidef_set_led_netdev "wan-port-link" "WAN-PORT-LINK" "90000.mdio-1:01:green:wan" "wan" "tx rx link_10 link_100 link_1000"
+ 	ucidef_set_led_netdev "lan1-port-link" "LAN1-PORT-LINK" "90000.mdio-1:02:green:lan" "lan1" "tx rx link_10 link_100 link_1000"
+diff --git a/target/linux/qualcommax/ipq807x/base-files/etc/board.d/02_network b/target/linux/qualcommax/ipq807x/base-files/etc/board.d/02_network
+index 3c0e123141a..2158b1327ec 100644
+--- a/target/linux/qualcommax/ipq807x/base-files/etc/board.d/02_network
++++ b/target/linux/qualcommax/ipq807x/base-files/etc/board.d/02_network
+@@ -13,6 +13,7 @@ ipq807x_setup_interfaces()
+ 	case "$board" in
+ 	aliyun,ap8220|\
+ 	edgecore,eap102|\
++	tcl,linkhub-hh500v|\
+ 	tplink,deco-x80-5g|\
+ 	yuncore,ax880|\
+ 	zte,mf269)
+@@ -93,6 +94,10 @@ ipq807x_setup_macs()
+ 		lan_mac=$(macaddr_add "$wan_mac" 1)
+ 		label_mac="$wan_mac"
+ 		;;
++	tcl,linkhub-hh500v)
++		wan_mac=$(mtd_get_mac_binary "0:ART" 0x5e290)
++		lan_mac=$(mtd_get_mac_binary "0:ART" 0x5e296)
++		;;
+ 	tplink,deco-x80-5g)
+ 		label_mac=$(get_mac_binary /tmp/factory_data/default-mac 0)
+ 		lan_mac=$(macaddr_add $label_mac 1)
+diff --git a/target/linux/qualcommax/ipq807x/base-files/etc/hotplug.d/firmware/11-ath11k-caldata b/target/linux/qualcommax/ipq807x/base-files/etc/hotplug.d/firmware/11-ath11k-caldata
+index df4907c5174..7d62684102d 100644
+--- a/target/linux/qualcommax/ipq807x/base-files/etc/hotplug.d/firmware/11-ath11k-caldata
++++ b/target/linux/qualcommax/ipq807x/base-files/etc/hotplug.d/firmware/11-ath11k-caldata
+@@ -96,6 +96,12 @@ case "$FIRMWARE" in
+ 	spectrum,sax1v1k)
+ 		caldata_extract_mmc "0:ART" 0x1000 0x20000
+ 		;;
++	tcl,linkhub-hh500v)
++		caldata_extract "0:ART" 0x1000 0x20000
++		ath11k_patch_mac $(mtd_get_mac_binary "0:ART" 0x5e29c) 0
++		ath11k_patch_mac $(mtd_get_mac_binary "0:ART" 0x5e2a2) 1
++		ath11k_set_macflag
++		;;
+ 	tplink,deco-x80-5g)
+ 		caldata_extract "0:art" 0x1000 0x20000
+ 		label_mac=$(get_mac_binary /tmp/factory_data/default-mac 0)
+diff --git a/target/linux/qualcommax/ipq807x/base-files/etc/init.d/modem b/target/linux/qualcommax/ipq807x/base-files/etc/init.d/modem
+new file mode 100755
+index 00000000000..a23d8c134b9
+--- /dev/null
++++ b/target/linux/qualcommax/ipq807x/base-files/etc/init.d/modem
+@@ -0,0 +1,22 @@
++#!/bin/sh /etc/rc.common
++
++START=15
++
++boot() {
++	case $(board_name) in
++		tcl,linkhub-hh500v)
++			PCIPATH="/sys/bus/pci/devices/0000:01:00.0"
++
++			for i in $(seq 0 10); do
++				[ -d "${PCIPATH}" ] && break
++				echo 1 > /sys/bus/pci/rescan
++				sleep 2
++			done
++
++			if [ ! -d "${PCIPATH}" ]; then
++				echo "No modem PCIe device found"
++				exit 1
++			fi
++			;;
++	esac
++}
+diff --git a/target/linux/qualcommax/ipq807x/base-files/lib/upgrade/platform.sh b/target/linux/qualcommax/ipq807x/base-files/lib/upgrade/platform.sh
+index 1ddc73f09ec..30ff4fce473 100644
+--- a/target/linux/qualcommax/ipq807x/base-files/lib/upgrade/platform.sh
++++ b/target/linux/qualcommax/ipq807x/base-files/lib/upgrade/platform.sh
+@@ -263,6 +263,10 @@ platform_do_upgrade() {
+ 		CI_DATAPART="rootfs_data"
+ 		emmc_do_upgrade "$1"
+ 		;;
++	tcl,linkhub-hh500v)
++		tcl_upgrade_prepare
++		nand_do_upgrade "$1"
++		;;
+ 	tplink,deco-x80-5g|\
+ 	tplink,eap620hd-v1|\
+ 	tplink,eap660hd-v1)
+diff --git a/target/linux/qualcommax/ipq807x/base-files/lib/upgrade/tcl.sh b/target/linux/qualcommax/ipq807x/base-files/lib/upgrade/tcl.sh
+new file mode 100644
+index 00000000000..8fd5a92e957
+--- /dev/null
++++ b/target/linux/qualcommax/ipq807x/base-files/lib/upgrade/tcl.sh
+@@ -0,0 +1,91 @@
++# based on target/linux/qualcommax/ipq50xx/base-files/lib/upgrade/elecom.sh
++
++. /lib/functions.sh
++
++# Read or update an entry in Qualcomm bootconfig partition
++#
++# parameters:
++#   $1: partition name of bootconfig (ex.: "0:bootconfig", "0:bootconfig1", etc)
++#   $2: entry name in bootconfig (ex.: "0:hlos", "rootfs", etc)
++#   $3: index to set for the entry (0/1)
++#
++# operations:
++#   read : bootconfig_rw_index <bootconfig> <entry>
++#   write: bootconfig_rw_index <bootconfig> <entry> <index>
++bootconfig_rw_index() {
++	local bootcfg="$1"
++	local partname="$2"
++	local index="$3"
++	local mtdidx
++	local tempfile
++	local current
++
++	if [ -z "$bootcfg" ] || [ -z "$partname" ]; then
++		echo "no value specified for bootconfig or partition entry"
++		return 1
++	fi
++
++	case "$index" in
++	0|1|"") ;;
++	*) echo "invalid bootconfig index specified \"$index\""; return 1 ;;
++	esac
++
++	mtdidx=$(find_mtd_index "$bootcfg")
++	[ ! "$mtdidx" ] && {
++		echo "cannot find mtd index for $partname"
++		return 1
++	}
++
++	tempfile=/tmp/mtd"$mtdidx".bin
++	dd if=/dev/mtd"$mtdidx" of="$tempfile" bs=1 count=336
++	[ $? -ne 0 ] || [ ! -f "$tempfile" ] && {
++		echo "failed to create a temp copy of /dev/mtd$mtdidx"
++		return 1
++	}
++
++	current=$(get_bootconfig_primaryboot "$tempfile" "$partname")
++
++	if [ -z "$index" ]; then
++		echo "$current"
++	elif [ "$current" != "$index" ]; then
++		set_bootconfig_primaryboot "$tempfile" "$partname" "$index"
++		mtd write "$tempfile" /dev/mtd"$mtdidx" 2>/dev/null
++		[ $? -ne 0 ] && {
++			echo "failed to write temp copy back to /dev/mtd$mtdidx"
++			return 1
++		}
++	fi
++	
++	rm "$tempfile"
++}
++
++tcl_swap_active_root() {
++	local index
++
++	index=$(bootconfig_rw_index "0:BOOTCONFIG" rootfs)
++	if [ -z "$index" ]; then
++		v "failed to read bootconfig index..."
++		nand_do_upgrade_failed
++	fi
++
++	if [ "$index" = "1" ]; then
++		bootconfig_rw_index "0:BOOTCONFIG" rootfs 0
++		bootconfig_rw_index "0:BOOTCONFIG1" rootfs 0
++	else
++		bootconfig_rw_index "0:BOOTCONFIG" rootfs 1
++		bootconfig_rw_index "0:BOOTCONFIG1" rootfs 1
++	fi
++}
++
++tcl_upgrade_prepare() {
++	local delay
++
++	delay=$(fw_printenv -n bootdelay)
++	[ -z "$delay" ] || [ "$delay" -eq "0" ] && \
++		fw_setenv bootdelay 3
++
++	if [ -z "$UPGRADE_OPT_USE_CURR_PART" ]; then
++		tcl_swap_active_root
++		CI_UBIPART="rootfs_1"
++	fi
++}

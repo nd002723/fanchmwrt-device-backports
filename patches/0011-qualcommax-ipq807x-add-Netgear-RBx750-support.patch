@@ -1,0 +1,585 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Michael Lotz <mmlr@mlotz.ch>
+Date: Thu, 5 Feb 2026 23:02:55 +0100
+Subject: [PATCH 11/76] qualcommax: ipq807x: add Netgear RBx750 support
+
+Netgear RBx750 are tri band, 2.4GHz and 2x 5GHz, 8 stream 802.11ax mesh
+devices from the Orbi series. The RBR750 is a router with a WAN and 3 LAN
+ports. The RBS750 is a satellite without WAN port, only 2 LAN ports and
+half the flash. The hardware is otherwise identical. They were sold in
+kits as RBK752-RBK757, with one router and 1-6 satellites.
+
+Hardware:
+* SoC: Qualcomm IPQ8074
+* RAM: 1GiB 1x Samsung
+* Flash: 512MiB Winbond W29N04GZ or 256MiB Winbond W29N02GZ
+* WLAN 2.4GHz: QCN5024 2x2:2 b/g/n/ax
+* WLAN 5GHz Low Band: QCN5054 2x2:2 a/n/ac/ax 5180-5320MHz
+* WLAN 5GHz High Band: QCN5054 4x4:4 a/n/ac/ax 5500-5700MHz
+* Ethernet: QCA8075 switch with 1 WAN and 3 LAN ports or 2 LAN ports
+* Serial Config: 3.3V TTL 115200-8-N-1, internal populated header
+* Serial Layout: Bottom <- RX, TX, GND, 3.3V (don't connect) -> Top
+* LEDs: green/red power, white/red/green/blue status
+* Buttons: 1x Reset, 1x WPS
+
+MAC addresses:
+LAN1: base address on label
+LAN2: base + 1
+LAN3: base + 2
+WAN: base + 1
+2.4GHz: base + 2
+5GHz-Low: base + 3
+5GHz-High: base + 4
+
+Flashing Notes:
+The stock firmware images are signed. Both the bootloader and the stock
+web interface check the signature and will fail to boot/flash.
+The bootloader automatically does NMRP when a gigabit LAN connection is
+present. The stock and factory images contain a U-Boot script that is
+executed when flashing using NMRP. This is used to alter and persist the
+U-Boot env with a boot command that works with unsigned firmware.
+
+Install OpenWrt:
+* Get the nmrpflash utility [0] and OpenWrt factory image
+* Find network interface to use: nmrpflash -L
+* Start nmrpflash: nmrpflash -i interface -f openwrt-...-factory.img
+* Connect the device LAN port closest to the power jack to the same
+  network using gigabit
+* Plug the device in and wait for the bootloader to flash
+* Unplug and replug the device once the power LED blinks amber
+
+Revert to Stock:
+The boot command needs to be reverted before flashing the stock firmware,
+otherwise it will fail to boot and get stuck in recovery mode (red power
+LED flashing).
+
+* Run: fw_setenv bootcmd bootipq
+* Restart the device
+* Flash the stock firmware RBx750-Va.b.c.d.img using nmrpflash
+
+[0]: https://github.com/jclehner/nmrpflash
+
+Signed-off-by: Michael Lotz <mmlr@mlotz.ch>
+Link: https://github.com/openwrt/openwrt/pull/21938
+Signed-off-by: Robert Marko <robimarko@gmail.com>
+---
+ .../uboot-envtools/files/qualcommax_ipq807x   |   2 +
+ package/firmware/ipq-wifi/Makefile            |   2 +
+ .../arm64/boot/dts/qcom/ipq8074-rbr750.dts    |  13 +
+ .../arm64/boot/dts/qcom/ipq8074-rbs750.dts    |  21 ++
+ .../arm64/boot/dts/qcom/ipq8074-rbx750.dtsi   | 292 ++++++++++++++++++
+ target/linux/qualcommax/image/ipq807x.mk      |  40 +++
+ .../image/netgear_rbx750.bootscript           |  10 +
+ .../ipq807x/base-files/etc/board.d/02_network |   2 +
+ .../etc/hotplug.d/firmware/11-ath11k-caldata  |   9 +
+ .../base-files/lib/upgrade/platform.sh        |   2 +
+ 10 files changed, 393 insertions(+)
+ create mode 100644 target/linux/qualcommax/files/arch/arm64/boot/dts/qcom/ipq8074-rbr750.dts
+ create mode 100644 target/linux/qualcommax/files/arch/arm64/boot/dts/qcom/ipq8074-rbs750.dts
+ create mode 100644 target/linux/qualcommax/files/arch/arm64/boot/dts/qcom/ipq8074-rbx750.dtsi
+ create mode 100644 target/linux/qualcommax/image/netgear_rbx750.bootscript
+
+diff --git a/package/boot/uboot-tools/uboot-envtools/files/qualcommax_ipq807x b/package/boot/uboot-tools/uboot-envtools/files/qualcommax_ipq807x
+index c95495a19ef..4c00f4c5725 100644
+--- a/package/boot/uboot-tools/uboot-envtools/files/qualcommax_ipq807x
++++ b/package/boot/uboot-tools/uboot-envtools/files/qualcommax_ipq807x
+@@ -40,6 +40,8 @@ qnap,301w)
+ 	;;
+ dynalink,dl-wrx36|\
+ netgear,rax120v2|\
++netgear,rbr750|\
++netgear,rbs750|\
+ netgear,sxr80|\
+ netgear,sxs80|\
+ netgear,wax218|\
+diff --git a/package/firmware/ipq-wifi/Makefile b/package/firmware/ipq-wifi/Makefile
+index d82e1b43771..fb594364a33 100644
+--- a/package/firmware/ipq-wifi/Makefile
++++ b/package/firmware/ipq-wifi/Makefile
+@@ -68,6 +68,7 @@ ALLWIFIBOARDS:= \
+ 	netgear_rax120v2 \
+ 	netgear_rbk20 \
+ 	netgear_rbk40 \
++	netgear_rbk750 \
+ 	netgear_sxk80 \
+ 	netgear_wax214 \
+ 	netgear_wax218 \
+@@ -256,6 +257,7 @@ $(eval $(call generate-ipq-wifi-package,netgear_lbr20,Netgear LBR20))
+ $(eval $(call generate-ipq-wifi-package,netgear_rax120v2,Netgear RAX120v2))
+ $(eval $(call generate-ipq-wifi-package,netgear_rbk20,Netgear RBK20))
+ $(eval $(call generate-ipq-wifi-package,netgear_rbk40,Netgear RBK40))
++$(eval $(call generate-ipq-wifi-package,netgear_rbk750,Netgear RBK750))
+ $(eval $(call generate-ipq-wifi-package,netgear_sxk80,Netgear SXK80))
+ $(eval $(call generate-ipq-wifi-package,netgear_wax214,Netgear WAX214))
+ $(eval $(call generate-ipq-wifi-package,netgear_wax218,Netgear WAX218))
+diff --git a/target/linux/qualcommax/files/arch/arm64/boot/dts/qcom/ipq8074-rbr750.dts b/target/linux/qualcommax/files/arch/arm64/boot/dts/qcom/ipq8074-rbr750.dts
+new file mode 100644
+index 00000000000..2bfa8975bff
+--- /dev/null
++++ b/target/linux/qualcommax/files/arch/arm64/boot/dts/qcom/ipq8074-rbr750.dts
+@@ -0,0 +1,13 @@
++// SPDX-License-Identifier: GPL-2.0-or-later OR MIT
++/*
++ * Copyright (c) 2026 Michael Lotz <mmlr@mlotz.ch>
++ */
++
++/dts-v1/;
++
++#include "ipq8074-rbx750.dtsi"
++
++/ {
++	model = "Netgear RBR750";
++	compatible = "netgear,rbr750", "qcom,ipq8074";
++};
+diff --git a/target/linux/qualcommax/files/arch/arm64/boot/dts/qcom/ipq8074-rbs750.dts b/target/linux/qualcommax/files/arch/arm64/boot/dts/qcom/ipq8074-rbs750.dts
+new file mode 100644
+index 00000000000..9982abd8037
+--- /dev/null
++++ b/target/linux/qualcommax/files/arch/arm64/boot/dts/qcom/ipq8074-rbs750.dts
+@@ -0,0 +1,21 @@
++// SPDX-License-Identifier: GPL-2.0-or-later OR MIT
++/*
++ * Copyright (c) 2026 Michael Lotz <mmlr@mlotz.ch>
++ */
++
++/dts-v1/;
++
++#include "ipq8074-rbx750.dtsi"
++
++/ {
++	model = "Netgear RBS750";
++	compatible = "netgear,rbs750", "qcom,ipq8074";
++};
++
++&dp1 {
++	status = "disabled";
++};
++
++&dp2 {
++	status = "disabled";
++};
+diff --git a/target/linux/qualcommax/files/arch/arm64/boot/dts/qcom/ipq8074-rbx750.dtsi b/target/linux/qualcommax/files/arch/arm64/boot/dts/qcom/ipq8074-rbx750.dtsi
+new file mode 100644
+index 00000000000..55474c82e3a
+--- /dev/null
++++ b/target/linux/qualcommax/files/arch/arm64/boot/dts/qcom/ipq8074-rbx750.dtsi
+@@ -0,0 +1,292 @@
++// SPDX-License-Identifier: GPL-2.0-or-later OR MIT
++/*
++ * Copyright (c) 2026 Michael Lotz <mmlr@mlotz.ch>
++ */
++
++/dts-v1/;
++
++#include "ipq8074.dtsi"
++#include "ipq8074-hk-cpu.dtsi"
++#include "ipq8074-ess.dtsi"
++#include <dt-bindings/gpio/gpio.h>
++#include <dt-bindings/input/input.h>
++#include <dt-bindings/leds/common.h>
++
++/ {
++	aliases {
++		led-boot = &lp5562_white;
++		led-failsafe = &lp5562_red;
++		led-upgrade = &lp5562_blue;
++		serial0 = &blsp1_uart5;
++		label-mac-device = &dp5;
++	};
++
++	chosen {
++		stdout-path = "serial0:115200n8";
++		bootargs-append = " ubi.mtd=rootfs root=/dev/ubiblock0_1";
++	};
++
++	keys {
++		compatible = "gpio-keys";
++
++		reset {
++			label = "reset";
++			gpios = <&tlmm 33 GPIO_ACTIVE_LOW>;
++			linux,code = <KEY_RESTART>;
++		};
++
++		wps {
++			label = "wps";
++			gpios = <&tlmm 34 GPIO_ACTIVE_HIGH>;
++			linux,code = <KEY_WPS_BUTTON>;
++		};
++	};
++
++	leds {
++		compatible = "gpio-leds";
++
++		power_green {
++			gpios = <&tlmm 54 GPIO_ACTIVE_LOW>;
++			color = <LED_COLOR_ID_GREEN>;
++			function = LED_FUNCTION_POWER;
++			linux,default-trigger = "default-on";
++		};
++
++		power_red {
++			gpios = <&tlmm 56 GPIO_ACTIVE_LOW>;
++			color = <LED_COLOR_ID_RED>;
++			function = LED_FUNCTION_POWER;
++		};
++	};
++};
++
++&blsp1_uart5 {
++	status = "okay";
++};
++
++&prng {
++	status = "okay";
++};
++
++&cryptobam {
++	status = "okay";
++};
++
++&crypto {
++	status = "okay";
++};
++
++&edma {
++	status = "okay";
++};
++
++&tlmm {
++	mdio_pins: mdio-pins {
++		mdc {
++			pins = "gpio68";
++			function = "mdc";
++			drive-strength = <8>;
++			bias-pull-up;
++		};
++
++		mdio {
++			pins = "gpio69";
++			function = "mdio";
++			drive-strength = <8>;
++			bias-pull-up;
++		};
++	};
++};
++
++&switch {
++	status = "okay";
++
++	switch_lan_bmp = <(ESS_PORT2 | ESS_PORT4 | ESS_PORT5)>;
++	switch_wan_bmp = <ESS_PORT1>;
++	switch_mac_mode = <MAC_MODE_PSGMII>;
++
++	qcom,port_phyinfo {
++		port@1 {
++			port_id = <1>;
++			phy_address = <0>;
++		};
++
++		port@2 {
++			port_id = <2>;
++			phy_address = <1>;
++		};
++
++		port@4 {
++			port_id = <4>;
++			phy_address = <3>;
++		};
++
++		port@5 {
++			port_id = <5>;
++			phy_address = <4>;
++		};
++	};
++};
++
++&mdio {
++	status = "okay";
++	pinctrl-0 = <&mdio_pins>;
++	pinctrl-names = "default";
++	reset-gpios = <&tlmm 37 GPIO_ACTIVE_LOW>;
++
++	ethernet-phy-package@0 {
++		#address-cells = <1>;
++		#size-cells = <0>;
++		compatible = "qcom,qca8075-package";
++		reg = <0>;
++
++		phy0: ethernet-phy@0 {
++			compatible = "ethernet-phy-ieee802.3-c22";
++			reg = <0>;
++		};
++
++		phy1: ethernet-phy@1 {
++			compatible = "ethernet-phy-ieee802.3-c22";
++			reg = <1>;
++		};
++
++		phy3: ethernet-phy@3 {
++			compatible = "ethernet-phy-ieee802.3-c22";
++			reg = <3>;
++		};
++
++		phy4: ethernet-phy@4 {
++			compatible = "ethernet-phy-ieee802.3-c22";
++			reg = <4>;
++		};
++	};
++};
++
++&dp1 {
++	status = "okay";
++	phy-handle = <&phy0>;
++	label = "wan";
++	nvmem-cell-names = "mac-address";
++	nvmem-cells = <&macaddr_boarddata 1>;
++};
++
++&dp2 {
++	status = "okay";
++	phy-handle = <&phy1>;
++	label = "lan3";
++	nvmem-cell-names = "mac-address";
++	nvmem-cells = <&macaddr_boarddata 2>;
++};
++
++&dp4 {
++	status = "okay";
++	phy-handle = <&phy3>;
++	label = "lan2";
++	nvmem-cell-names = "mac-address";
++	nvmem-cells = <&macaddr_boarddata 1>;
++};
++
++&dp5 {
++	status = "okay";
++	phy-handle = <&phy4>;
++	label = "lan1";
++	nvmem-cell-names = "mac-address";
++	nvmem-cells = <&macaddr_boarddata 0>;
++};
++
++&qpic_bam {
++	status = "okay";
++};
++
++&qpic_nand {
++	status = "okay";
++
++	nand@0 {
++		reg = <0>;
++		nand-ecc-strength = <4>;
++		nand-ecc-step-size = <512>;
++		nand-bus-width = <8>;
++
++		partitions {
++			compatible = "qcom,smem-part";
++
++			partition-board_data {
++				label = "board_data";
++
++				nvmem-layout {
++					compatible = "fixed-layout";
++					#address-cells = <1>;
++					#size-cells = <1>;
++
++					macaddr_boarddata: macaddr@40 {
++						compatible = "mac-base";
++						reg = <0x40 0x6>;
++						#nvmem-cell-cells = <1>;
++					};
++				};
++			};
++
++			partition-0-appsblenv {
++				label = "0:appsblenv";
++
++				nvmem-layout {
++					compatible = "u-boot,env";
++					env-size = <0x40000>;
++				};
++			};
++		};
++	};
++};
++
++&wifi {
++	status = "okay";
++	qcom,ath11k-calibration-variant = "Netgear-RBK750";
++};
++
++&blsp1_i2c2 {
++	status = "okay";
++
++	lp5562@31 {
++		compatible = "ti,lp5562";
++		reg = <0x31>;
++		clock-mode = [02];
++		#address-cells = <1>;
++		#size-cells = <0>;
++
++		lp5562_red: led@0 {
++			chan-name = "lp5562_red";
++			led-cur = [20];
++			max-cur = [60];
++			color = <LED_COLOR_ID_RED>;
++			function = LED_FUNCTION_STATUS;
++			reg = <0>;
++		};
++
++		lp5562_green: led@1 {
++			chan-name = "lp5562_green";
++			led-cur = [20];
++			max-cur = [60];
++			color = <LED_COLOR_ID_GREEN>;
++			function = LED_FUNCTION_STATUS;
++			reg = <1>;
++		};
++
++		lp5562_blue: led@2 {
++			chan-name = "lp5562_blue";
++			led-cur = [20];
++			max-cur = [60];
++			color = <LED_COLOR_ID_BLUE>;
++			function = LED_FUNCTION_STATUS;
++			reg = <2>;
++		};
++
++		lp5562_white: led@3 {
++			chan-name = "lp5562_white";
++			led-cur = [20];
++			max-cur = [60];
++			color = <LED_COLOR_ID_WHITE>;
++			function = LED_FUNCTION_STATUS;
++			reg = <3>;
++		};
++	};
++};
+diff --git a/target/linux/qualcommax/image/ipq807x.mk b/target/linux/qualcommax/image/ipq807x.mk
+index fa3ab8475eb..b48a9142639 100644
+--- a/target/linux/qualcommax/image/ipq807x.mk
++++ b/target/linux/qualcommax/image/ipq807x.mk
+@@ -23,6 +23,17 @@ define Build/asus-trx
+ 	mv $@.new $@
+ endef
+ 
++define Build/netgear-rbx750-qsdk-ipq-factory
++	$(CP) $(FLASH_SCRIPT) $(KDIR_TMP)/
++
++	echo "VERSION : V8.0.0.0_$(LINUX_VERSION)" > $@.metadata
++	echo "MODEL_ID : $(DEVICE_MODEL)" >> $@.metadata
++
++	$(TOPDIR)/scripts/mkits-qsdk-ipq-image.sh $@.its $(FLASH_SCRIPT) txt $@.metadata ubi $@
++	PATH=$(LINUX_DIR)/scripts/dtc:$(PATH) mkimage -f $@.its $@.new
++	@mv $@.new $@
++endef
++
+ define Build/wax6xx-netgear-tar
+ 	mkdir $@.tmp
+ 	mv $@ $@.tmp/nand-ipq807x-apps.img
+@@ -282,6 +293,35 @@ endif
+ endef
+ TARGET_DEVICES += netgear_rax120v2
+ 
++define Device/netgear_rbx750
++	$(call Device/FitImage)
++	$(call Device/UbiFit)
++	SOC := ipq8074
++	DEVICE_VENDOR := Netgear
++	BLOCKSIZE := 128k
++	PAGESIZE := 2048
++	DEVICE_PACKAGES := ipq-wifi-netgear_rbk750 kmod-leds-lp5562
++	DEVICE_DTS_CONFIG := config@oak03
++	FLASH_SCRIPT := netgear_rbx750.bootscript
++	IMAGES += factory.chk
++	IMAGE/factory.chk := append-ubi | netgear-rbx750-qsdk-ipq-factory | \
++		netgear-chk
++endef
++
++define Device/netgear_rbr750
++	$(call Device/netgear_rbx750)
++	DEVICE_MODEL := RBR750
++	NETGEAR_BOARD_ID := U12H415T00_NETGEAR
++endef
++TARGET_DEVICES += netgear_rbr750
++
++define Device/netgear_rbs750
++	$(call Device/netgear_rbx750)
++	DEVICE_MODEL := RBS750
++	NETGEAR_BOARD_ID := U12H416T00_NETGEAR
++endef
++TARGET_DEVICES += netgear_rbs750
++
+ define Device/netgear_sxk80
+ 	$(call Device/FitImage)
+ 	$(call Device/UbiFit)
+diff --git a/target/linux/qualcommax/image/netgear_rbx750.bootscript b/target/linux/qualcommax/image/netgear_rbx750.bootscript
+new file mode 100644
+index 00000000000..9c89c881b22
+--- /dev/null
++++ b/target/linux/qualcommax/image/netgear_rbx750.bootscript
+@@ -0,0 +1,10 @@
++imxtract $imgaddr ubi
++nand device 0
++setenv firmware_partition 0
++setenv mtdids nand0=nand0
++setenv mtdparts mtdparts=nand0:0x6d00000@0x11c00000(fs) # RBR750
++mtdparts || setenv mtdparts mtdparts=nand0:0x4280000@0x3e80000(fs) # RBS750
++nand erase.part fs
++nand write $fileaddr fs $filesize
++setenv bootcmd "ubi part fs && ubi read 0x44000000 kernel && bootm"
++saveenv
+diff --git a/target/linux/qualcommax/ipq807x/base-files/etc/board.d/02_network b/target/linux/qualcommax/ipq807x/base-files/etc/board.d/02_network
+index 2158b1327ec..965a7f42fc7 100644
+--- a/target/linux/qualcommax/ipq807x/base-files/etc/board.d/02_network
++++ b/target/linux/qualcommax/ipq807x/base-files/etc/board.d/02_network
+@@ -39,6 +39,7 @@ ipq807x_setup_interfaces()
+ 	linksys,mx4200v1|\
+ 	linksys,mx4200v2|\
+ 	linksys,mx4300|\
++	netgear,rbr750|\
+ 	prpl,haze|\
+ 	redmi,ax6|\
+ 	spectrum,sax1v1k|\
+@@ -59,6 +60,7 @@ ipq807x_setup_interfaces()
+ 	netgear,wax620)
+ 		ucidef_set_interface_lan "lan" "dhcp"
+ 		;;
++	netgear,rbs750|\
+ 	netgear,wax630)
+ 		ucidef_set_interface_lan "lan1 lan2" "dhcp"
+ 		;;
+diff --git a/target/linux/qualcommax/ipq807x/base-files/etc/hotplug.d/firmware/11-ath11k-caldata b/target/linux/qualcommax/ipq807x/base-files/etc/hotplug.d/firmware/11-ath11k-caldata
+index 7d62684102d..ef23e0af65a 100644
+--- a/target/linux/qualcommax/ipq807x/base-files/etc/hotplug.d/firmware/11-ath11k-caldata
++++ b/target/linux/qualcommax/ipq807x/base-files/etc/hotplug.d/firmware/11-ath11k-caldata
+@@ -67,6 +67,15 @@ case "$FIRMWARE" in
+ 		ath11k_patch_mac $(mtd_get_mac_binary boarddata1 0x6) 2
+ 		ath11k_set_macflag
+ 		;;
++	netgear,rbr750|\
++	netgear,rbs750)
++		caldata_extract "0:art" 0x1000 0x20000
++		label_mac=$(get_mac_label_dt)
++		ath11k_patch_mac $(macaddr_add $label_mac 3) 0
++		ath11k_patch_mac $(macaddr_add $label_mac 2) 1
++		ath11k_patch_mac $(macaddr_add $label_mac 4) 2
++		ath11k_set_macflag
++		;;
+ 	netgear,sxr80|\
+ 	netgear,sxs80)
+ 		caldata_extract "0:art" 0x1000 0x20000
+diff --git a/target/linux/qualcommax/ipq807x/base-files/lib/upgrade/platform.sh b/target/linux/qualcommax/ipq807x/base-files/lib/upgrade/platform.sh
+index 30ff4fce473..9ba3d97c3d8 100644
+--- a/target/linux/qualcommax/ipq807x/base-files/lib/upgrade/platform.sh
++++ b/target/linux/qualcommax/ipq807x/base-files/lib/upgrade/platform.sh
+@@ -180,6 +180,8 @@ platform_do_upgrade() {
+ 	dynalink,dl-wrx36|\
+ 	edimax,cax1800|\
+ 	netgear,rax120v2|\
++	netgear,rbr750|\
++	netgear,rbs750|\
+ 	netgear,sxr80|\
+ 	netgear,sxs80|\
+ 	netgear,wax218|\

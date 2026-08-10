@@ -1,0 +1,74 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Zoltan HERPAI <wigyori@uid0.hu>
+Date: Mon, 6 Oct 2025 21:09:32 +0000
+Subject: [PATCH 20/76] sunxi: add PineCube support
+
+PineCube is a low-powered, open source IP camera with OV5640.
+
+Specifications:
+SoC:      Allwinner S3 Cortex-A7
+DRAM:     128MB DDR3 integrated
+Power:    microUSB
+Storage:  microSD / 16MByte SPI flash
+USB:      1x 2.0
+Network:  10/100Mbit ethernet with passive PoE (4-18V)
+Wireless: RTL8189ES (unsupported)
+Debug:    Serial UART on 26-pin GPIO
+Features: 5 mpx OV5640 camera, microphone, IR LEDs
+
+Flashing instructions:
+Standard sunxi SD card installation procedure - copy image to SD card,
+insert into SD card slot on the device and boot.
+
+Link: https://github.com/openwrt/openwrt/pull/22422
+Signed-off-by: Zoltan HERPAI <wigyori@uid0.hu>
+---
+ package/boot/uboot-sunxi/Makefile    | 7 +++++++
+ target/linux/sunxi/image/cortexa7.mk | 9 +++++++++
+ 2 files changed, 16 insertions(+)
+
+diff --git a/package/boot/uboot-sunxi/Makefile b/package/boot/uboot-sunxi/Makefile
+index 7cd061b03f3..78b02d34a35 100644
+--- a/package/boot/uboot-sunxi/Makefile
++++ b/package/boot/uboot-sunxi/Makefile
+@@ -264,6 +264,12 @@ define U-Boot/pangolin
+   UENV:=pangolin
+ endef
+ 
++define U-Boot/pinecube
++  BUILD_SUBTARGET:=cortexa7
++  NAME:=Pine64 PineCube
++  BUILD_DEVICES:=pine64_pinecube
++endef
++
+ define U-Boot/popstick
+   BUILD_SUBTARGET:=arm926ejs
+   NAME:=PopStick
+@@ -451,6 +457,7 @@ UBOOT_TARGETS := \
+ 	orangepi_zero2w \
+ 	orangepi_zero3 \
+ 	pangolin \
++	pinecube \
+ 	popstick \
+ 	pine64_plus \
+ 	Sinovoip_BPI_M3 \
+diff --git a/target/linux/sunxi/image/cortexa7.mk b/target/linux/sunxi/image/cortexa7.mk
+index 4f0ec9b47a8..50d9a29f4e3 100644
+--- a/target/linux/sunxi/image/cortexa7.mk
++++ b/target/linux/sunxi/image/cortexa7.mk
+@@ -92,6 +92,15 @@ define Device/lemaker_bananapi
+ endef
+ TARGET_DEVICES += lemaker_bananapi
+ 
++define Device/pine64_pinecube
++  $(call Device/FitImageGzip)
++  DEVICE_VENDOR := Pine64
++  DEVICE_MODEL := PineCube
++  SOC := sun8i-s3
++  SUNXI_DTS := $$(SUNXI_DTS_DIR)$$(SOC)-pinecube
++endef
++TARGET_DEVICES += pine64_pinecube
++
+ define Device/sinovoip_bpi-m2-berry
+   $(call Device/FitImageGzip)
+   DEVICE_VENDOR := Sinovoip

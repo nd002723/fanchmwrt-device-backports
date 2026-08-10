@@ -1,0 +1,515 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Chen Minqiang <ptpt52@gmail.com>
+Date: Fri, 12 Dec 2025 10:58:16 +0800
+Subject: [PATCH 06/76] mediatek: filogic: add support for Tenda BE12 Pro
+
+This patch adds support for Tenda BE12 Pro.
+
+The stock bootloader requires a specific 16-byte header (Magic: "God1")
+to correctly verify and boot the Linux kernel from flash. A new image
+command `tenda-mkdualimageheader` is added to generate this header and
+append the checksum/size information required for the device to boot
+successfully.
+
+Hardware Specification:
+- SoC: MediaTek MT7987A (Quad-core ARM Cortex-A53 2.0 GHz)
+- RAM: 512 MiB DDR4
+- Flash: 128 MiB SPI-NAND
+- WiFi: MediaTek MT7992E (WiFi 7)
+  - 2.4GHz: b/g/n/ax/be (4x4 MIMO)
+  - 5GHz: a/n/ac/ax/be (4x4 MIMO)
+- Ethernet:
+  - 3x 10/100/1000 Mbps LAN (Airoha AN8855AE Switch)
+  - 1x 10/100/1000/2500 Mbps LAN (SoC internal PHY)
+  - 1x 10/100/1000/2500 Mbps WAN (Airoha EN8811H PHY)
+- Buttons: Reset, WPS
+- LEDs: 2x (Blue: System/Run, Red: Alarm)
+- UART: 115200 8n1 (VCC, RX, TX, GND)
+
+Flash Layout:
+- 0x000000 - 0x300000 : Bootloader
+- 0x300000 - 0x380000 : u-boot-env
+- 0x380000 - 0x780000 : Factory
+- 0x780000 - 0xd80000 : kernel
+- 0xd80000 - 0x6780000 : ubi (rootfs)
+- 0x6780000 - 0x6b80000 : CFG
+- 0x6b80000 - 0x6f80000 : MISC2
+
+MAC Addresses (NVMEM):
+- Base MAC located at Factory partition offset 0x4
+- gmac2 (WAN) : Base - 2 (Label MAC)
+- gmac0 (LAN) : Base - 1
+- gmac1 (LAN) : Base - 3
+- 2.4 GHz     : Base
+- 5 GHz       : Base + 1
+
+Installation:
+1. Connect via UART and interrupt U-Boot by pressing 'Ctrl+C' during boot.
+2. Set up a TFTP server on a computer (IP 192.168.1.2) containing
+   'openwrt-initramfs.bin'.
+3. Load the initramfs image:
+   tftpboot openwrt-initramfs.bin
+4. Boot the image:
+   bootm
+5. Once booted into OpenWrt initramfs, perform a sysupgrade with the
+   sysupgrade image.
+
+Signed-off-by: Chen Minqiang <ptpt52@gmail.com>
+Link: https://github.com/openwrt/openwrt/pull/21461
+Signed-off-by: Hauke Mehrtens <hauke@hauke-m.de>
+---
+ .../mediatek/dts/mt7987a-tenda-be12-pro.dts   | 388 ++++++++++++++++++
+ .../filogic/base-files/etc/board.d/02_network |   3 +
+ target/linux/mediatek/image/filogic.mk        |  23 ++
+ 3 files changed, 414 insertions(+)
+ create mode 100644 target/linux/mediatek/dts/mt7987a-tenda-be12-pro.dts
+
+diff --git a/target/linux/mediatek/dts/mt7987a-tenda-be12-pro.dts b/target/linux/mediatek/dts/mt7987a-tenda-be12-pro.dts
+new file mode 100644
+index 00000000000..0be7d9b5992
+--- /dev/null
++++ b/target/linux/mediatek/dts/mt7987a-tenda-be12-pro.dts
+@@ -0,0 +1,388 @@
++// SPDX-License-Identifier: (GPL-2.0 OR MIT)
++/*
++ * Author: Developer X <dev@x-wrt.com>
++ */
++
++/dts-v1/;
++#include "mt7987a.dtsi"
++#include <dt-bindings/input/input.h>
++
++/ {
++	model = "Tenda BE12 Pro";
++	compatible = "tenda,be12-pro", "mediatek,mt7987a", "mediatek,mt7987";
++
++	aliases {
++		label-mac-device = &gmac2;
++		led-boot = &led_status_green;
++		led-failsafe = &led_status_red;
++		led-running = &led_status_green;
++		led-upgrade = &led_status_red;
++	};
++
++	chosen {
++		bootargs-override = "console=ttyS0,115200n1 earlycon=uart8250,mmio32,0x11000000 pci=pcie_bus_perf";
++	};
++
++	gpio-keys {
++		compatible = "gpio-keys";
++
++		reset {
++			label = "reset";
++			linux,code = <KEY_RESTART>;
++			gpios = <&pio 1 GPIO_ACTIVE_LOW>;
++			debounce-interval = <10>;
++		};
++
++		wps {
++			label = "wps";
++			linux,code = <KEY_WPS_BUTTON>;
++			gpios = <&pio 0 GPIO_ACTIVE_LOW>;
++			debounce-interval = <10>;
++		};
++	};
++
++	gpio-leds {
++		compatible = "gpio-leds";
++
++		led_status_green: status_green {
++			function = LED_FUNCTION_STATUS;
++			color = <LED_COLOR_ID_GREEN>;
++			gpios = <&pio 6 GPIO_ACTIVE_LOW>;
++		};
++
++		led_status_red: status_red {
++			function = LED_FUNCTION_STATUS;
++			color = <LED_COLOR_ID_RED>;
++			gpios = <&pio 7 GPIO_ACTIVE_LOW>;
++		};
++	};
++};
++
++&spi0 {
++	pinctrl-names = "default";
++	pinctrl-0 = <&spi0_flash_pins>;
++	status = "okay";
++
++	flash@0 {
++		compatible = "spi-nand";
++		reg = <0>;
++		spi-max-frequency = <52000000>;
++		spi-tx-bus-width = <4>;
++		spi-rx-bus-width = <4>;
++		mediatek,nmbm;
++		mediatek,bmt-max-ratio = <1>;
++		mediatek,bmt-max-reserved-blocks = <64>;
++
++		partitions {
++			compatible = "fixed-partitions";
++			#address-cells = <1>;
++			#size-cells = <1>;
++
++			partition@0 {
++				label = "Bootloader";
++				reg = <0x00000 0x0300000>;
++				read-only;
++			};
++
++			partition@300000 {
++				label = "u-boot-env";
++				reg = <0x0300000 0x0080000>;
++			};
++
++			partition@380000 {
++				label = "Factory";
++				reg = <0x380000 0x0400000>;
++				read-only;
++
++				nvmem-layout {
++					compatible = "fixed-layout";
++					#address-cells = <1>;
++					#size-cells = <1>;
++
++					eeprom_factory_0: eeprom@0 {
++						reg = <0x0 0x1e00>;
++					};
++
++					macaddr_factory_4: macaddr@4 {
++						compatible = "mac-base";
++						reg = <0x4 0x6>;
++						#nvmem-cell-cells = <1>;
++					};
++				};
++			};
++
++			partition@780000 {
++				label = "kernel";
++				reg = <0x780000 0x600000>;
++			};
++
++			partition@d80000 {
++				label = "ubi";
++				reg = <0xd80000 0x5a00000>;
++			};
++
++			partition@6780000 {
++				label = "CFG";
++				reg = <0x6780000 0x400000>;
++				read-only;
++			};
++
++			partition@6b80000 {
++				label = "MISC2";
++				reg = <0x6b80000 0x400000>;
++				read-only;
++			};
++		};
++	};
++};
++
++&gmac0 {
++	phy-mode = "2500base-x";
++	status = "okay";
++
++	nvmem-cells = <&macaddr_factory_4 (-1)>;
++	nvmem-cell-names = "mac-address";
++
++	fixed-link {
++		speed = <2500>;
++		full-duplex;
++		pause;
++	};
++};
++
++&gmac1 {
++	phy-mode = "internal";
++	phy-handle = <&phy15>;
++	status = "okay";
++
++	nvmem-cells = <&macaddr_factory_4 (-3)>;
++	nvmem-cell-names = "mac-address";
++};
++
++&gmac2 {
++	phy-mode = "2500base-x";
++	phy-handle = <&phy11>;
++	status = "okay";
++
++	nvmem-cells = <&macaddr_factory_4 (-2)>;
++	nvmem-cell-names = "mac-address";
++};
++
++&mdio {
++	phy11: phy@11 {
++		compatible = "ethernet-phy-ieee802.3-c45";
++		reg = <11>;
++
++		reset-assert-us = <10000>;
++		reset-deassert-us = <20000>;
++		reset-gpios = <&pio 48 GPIO_ACTIVE_LOW>;
++	};
++
++	phy15: phy@15 {
++		compatible = "ethernet-phy-ieee802.3-c45";
++		reg = <15>;
++	};
++
++	mfd@1 {
++		compatible = "airoha,an8855-mfd";
++		reg = <1>;
++
++		efuse {
++			compatible = "airoha,an8855-efuse";
++			#nvmem-cell-cells = <0>;
++
++			nvmem-layout {
++				compatible = "fixed-layout";
++				#address-cells = <1>;
++				#size-cells = <1>;
++
++				shift_sel_port0_tx_a: shift-sel-port0-tx-a@c {
++					reg = <0xc 0x4>;
++				};
++
++				shift_sel_port0_tx_b: shift-sel-port0-tx-b@10 {
++					reg = <0x10 0x4>;
++				};
++
++				shift_sel_port0_tx_c: shift-sel-port0-tx-c@14 {
++					reg = <0x14 0x4>;
++				};
++
++				shift_sel_port0_tx_d: shift-sel-port0-tx-d@18 {
++					reg = <0x18 0x4>;
++				};
++
++				shift_sel_port1_tx_a: shift-sel-port1-tx-a@1c {
++					reg = <0x1c 0x4>;
++				};
++
++				shift_sel_port1_tx_b: shift-sel-port1-tx-b@20 {
++					reg = <0x20 0x4>;
++				};
++
++				shift_sel_port1_tx_c: shift-sel-port1-tx-c@24 {
++					reg = <0x24 0x4>;
++				};
++
++				shift_sel_port1_tx_d: shift-sel-port1-tx-d@28 {
++					reg = <0x28 0x4>;
++				};
++
++				shift_sel_port2_tx_a: shift-sel-port2-tx-a@2c {
++					reg = <0x2c 0x4>;
++				};
++
++				shift_sel_port2_tx_b: shift-sel-port2-tx-b@30 {
++					reg = <0x30 0x4>;
++				};
++
++				shift_sel_port2_tx_c: shift-sel-port2-tx-c@34 {
++					reg = <0x34 0x4>;
++				};
++
++				shift_sel_port2_tx_d: shift-sel-port2-tx-d@38 {
++					reg = <0x38 0x4>;
++				};
++
++				shift_sel_port3_tx_a: shift-sel-port3-tx-a@4c {
++					reg = <0x4c 0x4>;
++				};
++
++				shift_sel_port3_tx_b: shift-sel-port3-tx-b@50 {
++					reg = <0x50 0x4>;
++				};
++
++				shift_sel_port3_tx_c: shift-sel-port3-tx-c@54 {
++					reg = <0x54 0x4>;
++				};
++
++				shift_sel_port3_tx_d: shift-sel-port3-tx-d@58 {
++					reg = <0x58 0x4>;
++				};
++			};
++		};
++
++		ethernet-switch {
++			compatible = "airoha,an8855-switch";
++			reset-gpios = <&pio 42 GPIO_ACTIVE_HIGH>;
++			airoha,ext-surge;
++
++			ports {
++				#address-cells = <1>;
++				#size-cells = <0>;
++
++				port@0 {
++					reg = <0>;
++					label = "lan1";
++					phy-mode = "internal";
++					phy-handle = <&internal_phy1>;
++				};
++
++				port@1 {
++					reg = <1>;
++					label = "lan2";
++					phy-mode = "internal";
++					phy-handle = <&internal_phy2>;
++				};
++
++				port@2 {
++					reg = <2>;
++					label = "lan3";
++					phy-mode = "internal";
++					phy-handle = <&internal_phy3>;
++				};
++
++				port@5 {
++					reg = <5>;
++					ethernet = <&gmac0>;
++					phy-mode = "2500base-x";
++
++					fixed-link {
++						speed = <2500>;
++						full-duplex;
++						pause;
++					};
++				};
++			};
++		};
++
++		mdio {
++			compatible = "airoha,an8855-mdio";
++			#address-cells = <1>;
++			#size-cells = <0>;
++
++			internal_phy1: phy@1 {
++				reg = <1>;
++
++				nvmem-cells = <&shift_sel_port0_tx_a>,
++						<&shift_sel_port0_tx_b>,
++						<&shift_sel_port0_tx_c>,
++						<&shift_sel_port0_tx_d>;
++				nvmem-cell-names = "tx_a", "tx_b", "tx_c", "tx_d";
++			};
++
++			internal_phy2: phy@2 {
++				reg = <2>;
++
++				nvmem-cells = <&shift_sel_port1_tx_a>,
++						<&shift_sel_port1_tx_b>,
++						<&shift_sel_port1_tx_c>,
++						<&shift_sel_port1_tx_d>;
++				nvmem-cell-names = "tx_a", "tx_b", "tx_c", "tx_d";
++			};
++
++			internal_phy3: phy@3 {
++				reg = <3>;
++
++				nvmem-cells = <&shift_sel_port2_tx_a>,
++						<&shift_sel_port2_tx_b>,
++						<&shift_sel_port2_tx_c>,
++						<&shift_sel_port2_tx_d>;
++				nvmem-cell-names = "tx_a", "tx_b", "tx_c", "tx_d";
++			};
++		};
++	};
++};
++
++&pcie0 {
++	pinctrl-names = "default";
++	pinctrl-0 = <&pcie0_pins>;
++	status = "okay";
++
++	pcie@0,0 {
++		reg = <0x0000 0 0 0 0>;
++
++		mt7992@0,0 {
++			compatible = "mediatek,mt76";
++			reg = <0x0000 0 0 0 0>;
++			device_type = "pci";
++
++			nvmem-cells = <&eeprom_factory_0>;
++			nvmem-cell-names = "eeprom";
++
++			#address-cells = <1>;
++			#size-cells = <0>;
++
++			ieee80211-freq-limit = <2400000 2500000>,
++					       <5170000 5835000>;
++
++			band@0 {
++				reg = <0>;
++				nvmem-cells = <&macaddr_factory_4 (0)>;
++				nvmem-cell-names = "mac-address";
++			};
++
++			band@1 {
++				reg = <1>;
++				nvmem-cells = <&macaddr_factory_4 (1)>;
++				nvmem-cell-names = "mac-address";
++			};
++		};
++	};
++};
++
++&uart0 {
++	pinctrl-names = "default";
++	pinctrl-0 = <&uart0_pins>;
++	status = "okay";
++};
+diff --git a/target/linux/mediatek/filogic/base-files/etc/board.d/02_network b/target/linux/mediatek/filogic/base-files/etc/board.d/02_network
+index bed2e04ac62..af0fee263d8 100644
+--- a/target/linux/mediatek/filogic/base-files/etc/board.d/02_network
++++ b/target/linux/mediatek/filogic/base-files/etc/board.d/02_network
+@@ -186,6 +186,9 @@ mediatek_setup_interfaces()
+ 	mercusys,mr90x-v1-ubi)
+ 		ucidef_set_interfaces_lan_wan "lan0 lan1 lan2" eth1
+ 		;;
++	tenda,be12-pro)
++		ucidef_set_interfaces_lan_wan "lan1 lan2 lan3 eth1" eth2
++		;;
+ 	tplink,fr365-v1)
+ 		ucidef_set_interfaces_lan_wan "port1 port3 port4 port5 port6" "port2"
+ 		;;
+diff --git a/target/linux/mediatek/image/filogic.mk b/target/linux/mediatek/image/filogic.mk
+index 5115f5775db..63ac7f94075 100644
+--- a/target/linux/mediatek/image/filogic.mk
++++ b/target/linux/mediatek/image/filogic.mk
+@@ -139,6 +139,13 @@ define Build/cetron-header
+ 	rm $@.tmp
+ endef
+ 
++define Build/tenda-mkdualimageheader
++	printf '%b' "\x47\x6f\x64\x31\x00\x00\x00\x00" >"$@.new"
++	gzip -c "$@" | tail -c8 >>"$@.new"
++	cat "$@" >>"$@.new"
++	mv "$@.new" "$@"
++endef
++
+ define Device/abt_asr3000
+   DEVICE_VENDOR := ABT
+   DEVICE_MODEL := ASR3000
+@@ -2882,6 +2889,22 @@ define Device/tenbay_wr3000k
+ endef
+ TARGET_DEVICES += tenbay_wr3000k
+ 
++define Device/tenda_be12-pro
++  DEVICE_VENDOR := Tenda
++  DEVICE_MODEL := BE12 Pro
++  DEVICE_DTS := mt7987a-tenda-be12-pro
++  DEVICE_DTS_DIR := ../dts
++  DEVICE_PACKAGES := mt7987-2p5g-phy-firmware airoha-en8811h-firmware kmod-phy-airoha-en8811h kmod-mt7992-firmware
++  UBINIZE_OPTS := -E 5
++  BLOCKSIZE := 128k
++  PAGESIZE := 2048
++  KERNEL_LOADADDR := 0x40000000
++  KERNEL_INITRAMFS := kernel-bin | lzma | \
++        fit lzma $$(KDIR)/image-$$(firstword $$(DEVICE_DTS)).dtb with-initrd | pad-to 64k
++  IMAGE/sysupgrade.bin := append-kernel | tenda-mkdualimageheader | sysupgrade-tar kernel=$$$$@ | append-metadata
++endef
++TARGET_DEVICES += tenda_be12-pro
++
+ define Device/totolink_x6000r
+   DEVICE_VENDOR := TOTOLINK
+   DEVICE_MODEL := X6000R

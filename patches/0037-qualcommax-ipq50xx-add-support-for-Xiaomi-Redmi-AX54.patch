@@ -1,0 +1,769 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: George Moussalem <george.moussalem@outlook.com>
+Date: Wed, 4 Jun 2025 10:42:38 +0400
+Subject: [PATCH 37/76] qualcommax: ipq50xx: add support for Xiaomi Redmi
+ AX5400
+
+Add support for Xiaomi AX5400 (RA74).
+
+Specifications:
+* SoC: Qualcomm IPQ5018 (64-bit dual-core ARM Cortex-A53 @ 1.0Ghz)
+* Memory: Etrontech EM6HE16EWAKG 512 MiB DDR3L-933
+* Serial Port: 1v8 TTL 115200n8
+* Wi-Fi: IPQ5018 (2x2 2.4 Ghz 802.11b/g/n/ax - up to 574 Mbps)
+	 QCN9024 (4x4 5 Ghz 802.11an/ac/ax - up to 4804 Mbps)
+* Ethernet: IPQ5018 integrated virtual switch connected to an
+	    external QCA8337 switch   (3 LAN Ports 10/100/1000)
+* Flash: Gigadevice GD5F1GQ5REYIG (128 MiB)
+* LEDs: 1x System Blue   (GPIO 24 Active High)
+	1x System Yellow (GPIO 25 Active High)
+	1x WAN Link Blue (GPIO 26 Active High)
+	1x WAN Link Yellow   (GPIO 27 Active High)
+* Buttons: 1x Reset  (GPIO 38 Active Low)
+	   1x WPS    (GPIO 28 Active Low)
+* MAC address layout: LAN (eth1): 0:art @ offset 0x0
+		      WAN (eth0): 0:art @ offset 0x6
+
+Flash instructions: (use redmi-ax5400 image for the Redmi AX5400)
+
+Download XMIR Patcher: https://github.com/openwrt-xiaomi/xmir-patcher
+
+First flash a ubinized OpenWrt initramfs that will serve as the intermediate step, since
+OpenWrt uses unified rootfs in order to fully utilize NAND and provide enough space for
+packages, through either of the below two methods:
+
+Installation via XMIR Patcher:
+
+1. Load the initramfs image: openwrt-qualcommax-ipq50xx-xiaomi_redmi-ax5400-initramfs-factory.ubi
+
+Installation via ubiformat method, through SSH:
+
+1. If needed, enable SSH using XMIR Patcher.
+2. Copy the file openwrt-qualcommax-ipq50xx-xiaomi_redmi-ax5400-initramfs-factory.ubi to the /tmp directory
+3. Open an SSH shell to the router
+4. Check which rootfs partition is your router booted in (0 = rootfs | 1 = rootfs_1):
+nvram get flag_boot_rootfs
+5. Find the rootfs and rootfs_1 mtd indexes respectively:
+cat /proc/mtd
+Please confirm if mtd18 and mtd19 are the correct indexes from above!
+6. Use the command ubiformat to flash the opposite mtd with UBI image:
+If nvram get flag_boot_rootfs returned 0:
+ubiformat /dev/mtd19 -y -f /tmp/openwrt-qualcommax-ipq50xx-xiaomi_redmi-ax5400-initramfs-factory.ubi && nvram set flag_boot_rootfs=1 && nvram set flag_last_success=1 && nvram commit
+otherwise:
+ubiformat /dev/mtd18 -y -f /tmp/openwrt-qualcommax-ipq50xx-xiaomi_redmi-ax5400-initramfs-factory.ubi && nvram set flag_boot_rootfs=0 && nvram set flag_last_success=0 && nvram commit
+7. Reboot the device by:
+reboot
+
+Continue in order to pernamently flash OpenWrt:
+1. Upload the sysupgrade image to /tmp/ using SCP:
+scp -O <path to image> root@192.168.1.1:/tmp/
+2. Open an SSH shell to 192.168.1.1 from a PC within the same subnet
+3. Use sysupgrade to flash the sysupgrade image:
+sysupgrade -n -v /tmp/openwrt-qualcommax-ipq50xx-xiaomi_redmi-ax5400-squashfs-sysupgrade.bin
+
+Device will reboot with OpenWrt, and then sysupgrade can be used to upgrade the device when desired.
+
+Signed-off-by: George Moussalem <george.moussalem@outlook.com>
+Link: https://github.com/openwrt/openwrt/pull/23374
+Signed-off-by: Robert Marko <robimarko@gmail.com>
+---
+ .../uboot-envtools/files/qualcommax_ipq50xx   |   3 +-
+ package/firmware/ipq-wifi/Makefile            |   2 +
+ .../boot/dts/qcom/ipq5018-redmi-ax5400.dts    | 521 ++++++++++++++++++
+ target/linux/qualcommax/image/ipq50xx.mk      |  29 +-
+ .../ipq50xx/base-files/etc/board.d/01_leds    |   4 +
+ .../ipq50xx/base-files/etc/board.d/02_network |   7 +
+ .../etc/hotplug.d/firmware/11-ath11k-caldata  |   6 +-
+ .../base-files/lib/upgrade/platform.sh        |   3 +-
+ 8 files changed, 564 insertions(+), 11 deletions(-)
+ create mode 100644 target/linux/qualcommax/files/arch/arm64/boot/dts/qcom/ipq5018-redmi-ax5400.dts
+
+diff --git a/package/boot/uboot-tools/uboot-envtools/files/qualcommax_ipq50xx b/package/boot/uboot-tools/uboot-envtools/files/qualcommax_ipq50xx
+index d825f885dd5..bf404fbc477 100644
+--- a/package/boot/uboot-tools/uboot-envtools/files/qualcommax_ipq50xx
++++ b/package/boot/uboot-tools/uboot-envtools/files/qualcommax_ipq50xx
+@@ -25,7 +25,8 @@ linksys,mx6200|\
+ linksys,spnmx56)
+ 	ubootenv_add_mtd "u_env" "0x0" "0x40000" "0x20000"
+ 	;;
+-xiaomi,ax6000)
++xiaomi,ax6000|\
++xiaomi,redmi-ax5400)
+ 	ubootenv_add_mtd "0:appsblenv" "0x0" "0x10000" "0x20000"
+ 	ubootenv_add_sys_mtd "bdata" "0x0" "0x10000" "0x20000"
+ 	;;
+diff --git a/package/firmware/ipq-wifi/Makefile b/package/firmware/ipq-wifi/Makefile
+index 32bd566fb75..ad2ad75a574 100644
+--- a/package/firmware/ipq-wifi/Makefile
++++ b/package/firmware/ipq-wifi/Makefile
+@@ -105,6 +105,7 @@ ALLWIFIBOARDS:= \
+ 	xiaomi_ax6000 \
+ 	xiaomi_ax9000 \
+ 	yyets_le1 \
++	xiaomi_redmi-ax5400 \
+ 	yuncore_ax830 \
+ 	yuncore_ax850 \
+ 	yuncore_ax880 \
+@@ -299,6 +300,7 @@ $(eval $(call generate-ipq-wifi-package,xiaomi_ax3600,Xiaomi AX3600))
+ $(eval $(call generate-ipq-wifi-package,xiaomi_ax6000,Xiaomi AX6000))
+ $(eval $(call generate-ipq-wifi-package,xiaomi_ax9000,Xiaomi AX9000))
+ $(eval $(call generate-ipq-wifi-package,yyets_le1,YYeTs LE1))
++$(eval $(call generate-ipq-wifi-package,xiaomi_redmi-ax5400,Xiaomi Redmi AX5400))
+ $(eval $(call generate-ipq-wifi-package,yuncore_ax830,Yuncore AX830))
+ $(eval $(call generate-ipq-wifi-package,yuncore_ax850,Yuncore AX850))
+ $(eval $(call generate-ipq-wifi-package,yuncore_ax880,Yuncore AX880))
+diff --git a/target/linux/qualcommax/files/arch/arm64/boot/dts/qcom/ipq5018-redmi-ax5400.dts b/target/linux/qualcommax/files/arch/arm64/boot/dts/qcom/ipq5018-redmi-ax5400.dts
+new file mode 100644
+index 00000000000..65bef4376a7
+--- /dev/null
++++ b/target/linux/qualcommax/files/arch/arm64/boot/dts/qcom/ipq5018-redmi-ax5400.dts
+@@ -0,0 +1,521 @@
++/dts-v1/;
++
++#include "ipq5018.dtsi"
++#include "ipq5018-ess.dtsi"
++
++#include <dt-bindings/gpio/gpio.h>
++#include <dt-bindings/input/input.h>
++#include <dt-bindings/leds/common.h>
++
++/ {
++	model = "Xiaomi Redmi AX5400";
++	compatible = "xiaomi,redmi-ax5400", "qcom,ipq5018";
++
++	aliases {
++		label-mac-device = &dp1;
++		led-boot = &led_system_blue;
++		led-failsafe = &led_system_yellow;
++		led-running = &led_system_blue;
++		led-upgrade = &led_system_yellow;
++		serial0 = &blsp1_uart1;
++	};
++
++	chosen {
++		/* Xiaomi's U-boot sets bootargs to:
++		 * ubi.mtd=rootfs_1 root=mtd:ubi_rootfs rootfstype=squashfs rootwait uart_en=1
++		 * so we need to override and set ubi.mtd=rootfs
++		 */
++		bootargs-append = " ubi.mtd=rootfs root=/dev/ubiblock0_0 coherent_pool=2M";
++		stdout-path = "serial0:115200n8";
++	};
++
++	keys {
++		compatible = "gpio-keys";
++
++		pinctrl-0 = <&button_pins>;
++		pinctrl-names = "default";
++
++		reset-button {
++			label = "reset";
++			gpios = <&tlmm 38 GPIO_ACTIVE_LOW>;
++			linux,code = <KEY_RESTART>;
++		};
++
++		wps-button {
++			label = "wps";
++			gpios = <&tlmm 28 GPIO_ACTIVE_LOW>;
++			linux,code = <KEY_WPS_BUTTON>;
++		};
++	};
++
++	leds {
++		compatible = "gpio-leds";
++
++		pinctrl-0 = <&leds_pins>;
++		pinctrl-names = "default";
++
++		led_system_blue: system-blue {
++			color = <LED_COLOR_ID_BLUE>;
++			function = LED_FUNCTION_POWER;
++			gpios = <&tlmm 24 GPIO_ACTIVE_HIGH>;
++		};
++
++		led_system_yellow: system-yellow {
++			color = <LED_COLOR_ID_YELLOW>;
++			function = LED_FUNCTION_POWER;
++			gpios = <&tlmm 25 GPIO_ACTIVE_HIGH>;
++		};
++
++		led_net_blue: net-blue {
++			color = <LED_COLOR_ID_BLUE>;
++			function = LED_FUNCTION_WAN;
++			gpios = <&tlmm 26 GPIO_ACTIVE_HIGH>;
++		};
++
++		led_net_yellow: net-yellow {
++			color = <LED_COLOR_ID_YELLOW>;
++			function = LED_FUNCTION_WAN;
++			gpios = <&tlmm 27 GPIO_ACTIVE_HIGH>;
++		};
++	};
++};
++
++&sleep_clk {
++	clock-frequency = <32000>;
++};
++
++&xo_board_clk {
++	clock-div = <4>;
++	clock-mult = <1>;
++};
++
++&blsp1_uart1 {
++	status = "okay";
++
++	pinctrl-0 = <&serial_0_pins>;
++	pinctrl-names = "default";
++};
++
++&crypto {
++	status = "okay";
++};
++
++&cryptobam {
++	status = "okay";
++};
++
++&prng {
++	status = "okay";
++};
++
++&qfprom {
++	status = "okay";
++};
++
++&qpic_bam {
++	status = "okay";
++};
++
++&qpic_nand {
++	pinctrl-0 = <&qpic_pins>;
++	pinctrl-names = "default";
++	status = "okay";
++
++	nand@0 {
++		compatible = "spi-nand";
++		reg = <0>;
++
++		nand-ecc-engine = <&qpic_nand>;
++		nand-ecc-step-size = <512>;
++		nand-ecc-strength = <8>;
++		nand-bus-width = <8>;
++
++		partitions {
++			compatible = "fixed-partitions";
++			#address-cells = <1>;
++			#size-cells = <1>;
++
++			partition@0 {
++				label = "0:sbl1";
++				reg = <0x00000000 0x80000>;
++				read-only;
++			};
++
++			partition@80000 {
++				label = "0:mibib";
++				reg = <0x00080000 0x80000>;
++				read-only;
++			};
++
++			partition@100000 {
++				label = "0:bootconfig";
++				reg = <0x00100000 0x40000>;
++				read-only;
++			};
++
++			partition@140000 {
++				label = "0:bootconfig1";
++				reg = <0x00140000 0x40000>;
++				read-only;
++			};
++
++			partition@180000 {
++				label = "0:qsee";
++				reg = <0x00180000 0x100000>;
++				read-only;
++			};
++
++			partition@280000 {
++				label = "0:qsee_1";
++				reg = <0x00280000 0x100000>;
++				read-only;
++			};
++
++			partition@380000 {
++				label = "0:devcfg";
++				reg = <0x00380000 0x40000>;
++				read-only;
++			};
++
++			partition@3c0000 {
++				label = "0:devcfg_1";
++				reg = <0x003c0000 0x40000>;
++				read-only;
++			};
++
++			partition@400000 {
++				label = "0:cdt";
++				reg = <0x00400000 0x40000>;
++				read-only;
++			};
++
++			partition@440000 {
++				label = "0:cdt_1";
++				reg = <0x00440000 0x40000>;
++				read-only;
++			};
++
++			partition@480000 {
++				label = "0:appsblenv";
++				reg = <0x00480000 0x80000>;
++			};
++
++			partition@500000 {
++				label = "0:appsbl";
++				reg = <0x00500000 0x140000>;
++				read-only;
++			};
++
++			partition@640000 {
++				label = "0:appsbl_1";
++				reg = <0x00640000 0x140000>;
++				read-only;
++			};
++
++			partition@780000 {
++				label = "0:art";
++				reg = <0x00780000 0x100000>;
++				read-only;
++
++				nvmem-layout {
++					compatible = "fixed-layout";
++					#address-cells = <1>;
++					#size-cells = <1>;
++
++					mac_addr_dp2: macaddr@0 {
++						reg = <0x0 0x6>;
++					};
++
++					mac_addr_dp1: macaddr@6 {
++						reg = <0x6 0x6>;
++					};
++				};
++			};
++
++			partition@880000 {
++				label = "0:training";
++				reg = <0x00880000 0x80000>;
++				read-only;
++			};
++
++			partition@900000 {
++				label = "bdata";
++				reg = <0x00900000 0x80000>;
++			};
++
++			partition@980000 {
++				label = "crash";
++				reg = <0x00980000 0x80000>;
++			};
++
++			partition@a00000 {
++				label = "crash_syslog";
++				reg = <0x00a00000 0x80000>;
++			};
++
++			partition@a80000 {
++				label = "ubi_kernel";
++				reg = <0x00a80000 0x2400000>;
++			};
++
++			partition@2e80000 {
++				label = "rootfs";
++				reg = <0x02e80000 0x5180000>;
++			};
++		};
++	};
++};
++
++/*
++* =================================================================
++*     _______________________             _______________________
++*    |        IPQ5018        |           |        QCA8337        |
++*    | +------+   +--------+ |           | +--------+   +------+ |
++*    | | MAC0 |---| GE Phy |-+--- MDI ---+ | Phy4   |---| MAC4 | |
++*    | +------+   +--------+ |           | +--------+   +------+ |
++*    | +------+   +--------+ |           | +--------+   +------+ |
++*    | | MAC1 |---| Uniphy |-+-- SGMII---+ | SerDes |---| MAC0 | |
++*    | +------+   +--------+ |           | +--------+   +------+ |
++*    |_______________________|           |_______________________|
++*
++* =================================================================
++*/
++
++&switch {
++	status = "okay";
++
++	switch_mac_mode = <MAC_MODE_SGMII_CHANNEL0>;
++
++	qcom,port_phyinfo {
++		// MAC0 -> GE Phy --- MDI --- QCA8337 PHY4
++		port@1 {
++			port_id = <1>;
++			mdiobus = <&mdio0>;
++			phy_address = <7>;
++			phy_dac = <0x10 0x10>;
++		};
++
++		// MAC1 -> Uniphy --- SGMII --- QCA8337 MAC6
++		port@2 {
++			port_id = <2>;
++			forced-speed = <1000>;
++			forced-duplex = <1>;
++		};
++	};
++};
++
++// MAC0 -> GE Phy
++&dp1 {
++	status = "okay";
++
++	nvmem-cells = <&mac_addr_dp1 0>;
++	nvmem-cell-names = "mac-address";
++};
++
++// MAC1 ---SGMII---> QCA8337
++&dp2 {
++	status = "okay";
++
++	nvmem-cells = <&mac_addr_dp2 0>;
++	nvmem-cell-names = "mac-address";
++
++	fixed-link {
++		speed = <1000>;
++		full-duplex;
++	};
++};
++
++&mdio0 {
++	status = "okay";
++};
++
++// IPQ5018 GE Phy -> QCA8337 PHY4
++&ge_phy {
++	qcom,dac-preset-short-cable;
++};
++
++&mdio1 {
++	status = "okay";
++
++	pinctrl-0 = <&mdio1_pins>;
++	pinctrl-names = "default";
++	reset-gpios = <&tlmm 39 GPIO_ACTIVE_LOW>;
++
++	// QCA8337 Phy0 -> WAN
++	qca8337_0: ethernet-phy@0 {
++		reg = <0>;
++	};
++
++	// QCA8337 Phy1 -> LAN1
++	qca8337_1: ethernet-phy@1 {
++		reg = <1>;
++	};
++
++	// QCA8337 Phy2 -> LAN2
++	qca8337_2: ethernet-phy@2 {
++		reg = <2>;
++	};
++
++	// QCA8337 Phy3 -> LAN3
++	qca8337_3: ethernet-phy@3 {
++		reg = <3>;
++	};
++
++	// QCA8337 Phy4 -> IPQ5018 GE Phy
++	qca8337_4: ethernet-phy@4 {
++		reg = <4>;
++	};
++
++	// QCA8337 switch
++	ethernet-switch@11 {
++		compatible = "qca,qca8337";
++		reg = <0x11>;
++
++		ports {
++			#address-cells = <1>;
++			#size-cells = <0>;
++
++			port@1 {
++				reg = <1>;
++				label = "wan";
++				phy-handle = <&qca8337_0>;
++
++				nvmem-cells = <&mac_addr_dp1 0>;
++				nvmem-cell-names = "mac-address";
++			};
++
++			port@2 {
++				reg = <2>;
++				label = "lan1";
++				phy-handle = <&qca8337_1>;
++			};
++
++			port@3 {
++				reg = <3>;
++				label = "lan2";
++				phy-handle = <&qca8337_2>;
++			};
++
++			port@4 {
++				reg = <4>;
++				label = "lan3";
++				phy-handle = <&qca8337_3>;
++			};
++
++			port@5 {
++				reg = <5>;
++				phy-handle = <&qca8337_4>;
++				phy-mode = "gmii";
++				ethernet = <&dp1>;
++			};
++
++			port@6 {
++				reg = <6>;
++				phy-mode = "sgmii";
++				ethernet = <&dp2>;
++				qca,sgmii-enable-pll;
++
++				fixed-link {
++					speed = <1000>;
++					full-duplex;
++				};
++			};
++		};
++	};
++};
++
++&tlmm {
++	button_pins: button-state {
++		pins = "gpio28", "gpio38";
++		function = "gpio";
++		drive-strength = <8>;
++		bias-pull-up;
++	};
++
++	leds_pins: leds-state {
++		pins = "gpio24", "gpio25", "gpio26", "gpio27";
++		function = "gpio";
++		drive-strength = <8>;
++		bias-pull-down;
++	};
++
++	mdio1_pins: mdio-state {
++		mdc-pins {
++			pins = "gpio36";
++			function = "mdc";
++			drive-strength = <8>;
++			bias-pull-up;
++		};
++
++		mdio-pins {
++			pins = "gpio37";
++			function = "mdio";
++			drive-strength = <8>;
++			bias-pull-up;
++		};
++	};
++
++	qpic_pins: qpic-state {
++		clock-pins {
++			pins = "gpio9";
++			function = "qspi_clk";
++			drive-strength = <8>;
++			bias-disable;
++		};
++
++		cs-pins {
++			pins = "gpio8";
++			function = "qspi_cs";
++			drive-strength = <8>;
++			bias-disable;
++		};
++
++		data-pins {
++			pins = "gpio4", "gpio5", "gpio6", "gpio7";
++			function = "qspi_data";
++			drive-strength = <8>;
++			bias-disable;
++		};
++	};
++
++	serial_0_pins: uart0-state {
++		pins = "gpio20", "gpio21";
++		function = "blsp0_uart0";
++		bias-disable;
++	};
++};
++
++&pcie0_phy {
++	status = "okay";
++};
++
++&pcie0 {
++	status = "okay";
++
++	perst-gpios = <&tlmm 15 GPIO_ACTIVE_LOW>;
++
++	pcie@0 {
++		wifi@0,0 {
++			status = "okay";
++
++			/* QCN9074: ath11k lacks DT compatible for PCI cards */
++			compatible = "pci17cb,1104";
++			reg = <0x00010000 0 0 0 0>;
++
++			qcom,ath11k-calibration-variant = "Xiaomi-Redmi-AX5400";
++		};
++	};
++};
++
++&q6v5_wcss {
++	firmware-name = "ath11k/IPQ5018/hw1.0/q6_fw.mdt",
++			"ath11k/IPQ5018/hw1.0/m3_fw.mdt";
++};
++
++&wifi {
++	status = "okay";
++
++	qcom,rproc = <&q6v5_wcss>;
++	qcom,ath11k-calibration-variant = "Xiaomi-Redmi-AX5400";
++	qcom,ath11k-fw-memory-mode = <1>;
++};
+diff --git a/target/linux/qualcommax/image/ipq50xx.mk b/target/linux/qualcommax/image/ipq50xx.mk
+index 60348ccea65..59348a79be0 100644
+--- a/target/linux/qualcommax/image/ipq50xx.mk
++++ b/target/linux/qualcommax/image/ipq50xx.mk
+@@ -181,30 +181,45 @@ define Device/linksys_spnmx56
+ endef
+ TARGET_DEVICES += linksys_spnmx56
+ 
+-define Device/xiaomi_ax6000
++define Device/xiaomi_ipq50xx_ax_base
+ 	$(call Device/FitImage)
+ 	$(call Device/UbiFit)
+ 	DEVICE_VENDOR := Xiaomi
+-	DEVICE_MODEL := AX6000
+ 	BLOCKSIZE := 128k
+ 	PAGESIZE := 2048
+-	DEVICE_DTS_CONFIG := config@mp03.1
+ 	SOC := ipq5018
+ 	KERNEL_SIZE := 36864k
+ 	NAND_SIZE := 128m
++ifneq ($(CONFIG_TARGET_ROOTFS_INITRAMFS),)
++	ARTIFACTS := initramfs-factory.ubi
++	ARTIFACT/initramfs-factory.ubi := append-image-stage initramfs-uImage.itb | ubinize-kernel
++endif
++endef
++
++define Device/xiaomi_ax6000
++	$(call Device/xiaomi_ipq50xx_ax_base)
++	DEVICE_MODEL := AX6000
++	DEVICE_DTS_CONFIG := config@mp03.1
+ 	DEVICE_PACKAGES := ath11k-firmware-ipq5018 \
+ 		kmod-ath11k-pci \
+ 		ath11k-firmware-qcn9074 \
+ 		kmod-ath10k-ct-smallbuffers \
+ 		ath10k-firmware-qca9887-ct \
+ 		ipq-wifi-xiaomi_ax6000
+-ifneq ($(CONFIG_TARGET_ROOTFS_INITRAMFS),)
+-	ARTIFACTS := initramfs-factory.ubi
+-	ARTIFACT/initramfs-factory.ubi := append-image-stage initramfs-uImage.itb | ubinize-kernel
+-endif
+ endef
+ TARGET_DEVICES += xiaomi_ax6000
+ 
++define Device/xiaomi_redmi-ax5400
++	$(call Device/xiaomi_ipq50xx_ax_base)
++	DEVICE_MODEL := Redmi AX5400
++	DEVICE_DTS_CONFIG := config@mp03.1
++	DEVICE_PACKAGES := ath11k-firmware-ipq5018 \
++		kmod-ath11k-pci \
++		ath11k-firmware-qcn9074 \
++		ipq-wifi-xiaomi_redmi-ax5400
++endef
++TARGET_DEVICES += xiaomi_redmi-ax5400
++
+ define Device/yuncore_ax830
+ 	$(call Device/FitImage)
+ 	$(call Device/UbiFit)
+diff --git a/target/linux/qualcommax/ipq50xx/base-files/etc/board.d/01_leds b/target/linux/qualcommax/ipq50xx/base-files/etc/board.d/01_leds
+index 874e96d489e..2380b54fb42 100644
+--- a/target/linux/qualcommax/ipq50xx/base-files/etc/board.d/01_leds
++++ b/target/linux/qualcommax/ipq50xx/base-files/etc/board.d/01_leds
+@@ -26,6 +26,10 @@ linksys,mr5500)
+ 	ucidef_set_led_netdev "wan-port-link" "WAN-PORT-LINK" "qca8k-0.0:04:green:wan" "wan" "link_10 link_100 link_1000"
+ 	ucidef_set_led_netdev "wan-port-activity" "WAN-PORT-ACTIVITY" "qca8k-0.0:04:amber:wan" "wan" "tx rx"
+ 	;;
++xiaomi,redmi-ax5400)
++	ucidef_set_led_netdev "wan-port-link-top-blue" "WAN-PORT-LINK-TOP-BLUE" "blue:wan" "wan" "link_1000"
++	ucidef_set_led_netdev "wan-port-link-top-yellow" "WAN-PORT-LINK-TOP-YELLOW" "yellow:wan" "wan" "link_10 link_100"
++	;;
+ xiaomi,ax6000)
+ 	ucidef_set_led_netdev "lan1-port-link" "LAN1-PORT-LINK" "90000.mdio-1:00:green:lan" "lan1" "tx rx link_10 link_100 link_1000"
+ 	ucidef_set_led_netdev "lan2-port-link" "LAN2-PORT-LINK" "90000.mdio-1:01:green:lan" "lan2" "tx rx link_10 link_100 link_1000"
+diff --git a/target/linux/qualcommax/ipq50xx/base-files/etc/board.d/02_network b/target/linux/qualcommax/ipq50xx/base-files/etc/board.d/02_network
+index 16aa187ec80..96751dfad63 100644
+--- a/target/linux/qualcommax/ipq50xx/base-files/etc/board.d/02_network
++++ b/target/linux/qualcommax/ipq50xx/base-files/etc/board.d/02_network
+@@ -29,6 +29,13 @@ ipq50xx_setup_interfaces()
+ 	yuncore,ax850)
+ 		ucidef_set_interfaces_lan_wan "lan" "wan"
+ 		;;
++	xiaomi,redmi-ax5400)
++		ucidef_set_interfaces_lan_wan "lan1 lan2 lan3" "wan"
++		ucidef_set_network_device_conduit "lan1" "eth1"
++		ucidef_set_network_device_conduit "lan2" "eth1"
++		ucidef_set_network_device_conduit "lan3" "eth1"
++		ucidef_set_network_device_conduit "wan" "eth0"
++		;;
+ 	esac
+ }
+ 
+diff --git a/target/linux/qualcommax/ipq50xx/base-files/etc/hotplug.d/firmware/11-ath11k-caldata b/target/linux/qualcommax/ipq50xx/base-files/etc/hotplug.d/firmware/11-ath11k-caldata
+index 92fd10a04fb..b94a1c66bb7 100644
+--- a/target/linux/qualcommax/ipq50xx/base-files/etc/hotplug.d/firmware/11-ath11k-caldata
++++ b/target/linux/qualcommax/ipq50xx/base-files/etc/hotplug.d/firmware/11-ath11k-caldata
+@@ -46,7 +46,8 @@ case "$FIRMWARE" in
+ 		ath11k_remove_regdomain
+ 		ath11k_set_macflag
+ 		;;
+-	xiaomi,ax6000)
++	xiaomi,ax6000|\
++	xiaomi,redmi-ax5400)
+ 		caldata_extract "0:art" 0x1000 0x20000
+ 		;;
+ 	yuncore,ax830|\
+@@ -131,7 +132,8 @@ case "$FIRMWARE" in
+ 		ath11k_remove_regdomain
+ 		ath11k_set_macflag
+ 		;;
+-	xiaomi,ax6000)
++	xiaomi,ax6000|\
++	xiaomi,redmi-ax5400)
+ 		caldata_extract "0:art" 0x26800 0x20000
+ 		;;
+ 	yuncore,ax850)
+diff --git a/target/linux/qualcommax/ipq50xx/base-files/lib/upgrade/platform.sh b/target/linux/qualcommax/ipq50xx/base-files/lib/upgrade/platform.sh
+index 9be1d8211cd..ef74ef7ecea 100644
+--- a/target/linux/qualcommax/ipq50xx/base-files/lib/upgrade/platform.sh
++++ b/target/linux/qualcommax/ipq50xx/base-files/lib/upgrade/platform.sh
+@@ -212,7 +212,8 @@ platform_do_upgrade() {
+ 		remove_oem_ubi_volume ubi_rootfs
+ 		nand_do_upgrade "$1"
+ 		;;
+-	xiaomi,ax6000)
++	xiaomi,ax6000|\
++	xiaomi,redmi-ax5400)
+ 		# Make sure that UART is enabled
+ 		fw_setenv boot_wait on
+ 		fw_setenv uart_en 1

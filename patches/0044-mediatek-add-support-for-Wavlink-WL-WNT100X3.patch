@@ -1,0 +1,359 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Fil Dunsky <filipp.dunsky@gmail.com>
+Date: Fri, 3 Apr 2026 12:44:50 +0300
+Subject: [PATCH 44/76] mediatek: add support for Wavlink WL-WNT100X3
+
+Hardware
+--------
+- SOC: MediaTek MT7981B
+- RAM: 512MB DDR3
+- FLASH: 128MB SPI-NAND ESMT F50L1G41LB
+- NETWORK: 1 x1000M WAN, 1 x 1000M LAN
+- WIFI: MediaTek MT7981B 2x2 DBDC 802.11ax 2T2R (2.4/5)
+- LEDs: 1x STATUS (blue)
+- USB: 1x USB 3.0 (XHCI)
+- FAN: 1x 5V FAN
+
+Installation / Upgrade Procedure
+-----------------------------
+
+1.Log in to the web management page.
+2.Select the country code and time zone, set the Wi-Fi password, and
+click Save.
+3.Click "More", navigate to "Developer Options", and enable the SSH
+function.
+4.Log in to the device via an SSH client (default IP is usually
+192.168.20.1).
+5.Use scp to upload the OpenWrt
+image(openwrt-mediatek-filogic-wavlink_wl-wnt100x3-squashfs-sysupgrade.bin)
+to the /tmp directory
+6.Perform the flash by running the sysupgrade command (use -n to
+overwrite the existing configuration)
+7.Wait for the device to reboot automatically. Once finished, access the
+OpenWrt web interface (LuCI) at the default IP 192.168.1.1.
+
+MAC Addresses
+-----------------------------
+
+2.4GHz: 80:3F:5D:xx:xx:93 (Factory 0x4)
+LAN   : 80:3F:5D:xx:xx:91 (Factory, 0x3fff4)
+WAN   : 80:3F:5D:xx:xx:92 (Factory, 0x3fffa)
+5GHz  : 02:3F:5D:xx:xx:93 (derived from 2.4GHz MAC, LAA))
+
+Signed-off-by: Fil Dunsky <filipp.dunsky@gmail.com>
+Link: https://github.com/openwrt/openwrt/pull/22753
+Signed-off-by: Hauke Mehrtens <hauke@hauke-m.de>
+---
+ .../dts/mt7981b-wavlink-wl-wnt100x3.dts       |  75 ++++++++
+ .../dts/mt7981b-wavlink-wl-wnt100x3.dtsi      | 167 ++++++++++++++++++
+ .../filogic/base-files/etc/board.d/02_network |   3 +-
+ .../base-files/lib/upgrade/platform.sh        |   1 +
+ target/linux/mediatek/image/filogic.mk        |  13 ++
+ 5 files changed, 258 insertions(+), 1 deletion(-)
+ create mode 100644 target/linux/mediatek/dts/mt7981b-wavlink-wl-wnt100x3.dts
+ create mode 100644 target/linux/mediatek/dts/mt7981b-wavlink-wl-wnt100x3.dtsi
+
+diff --git a/target/linux/mediatek/dts/mt7981b-wavlink-wl-wnt100x3.dts b/target/linux/mediatek/dts/mt7981b-wavlink-wl-wnt100x3.dts
+new file mode 100644
+index 00000000000..232f44f98a0
+--- /dev/null
++++ b/target/linux/mediatek/dts/mt7981b-wavlink-wl-wnt100x3.dts
+@@ -0,0 +1,75 @@
++// SPDX-License-Identifier: GPL-2.0-only OR MIT
++
++/dts-v1/;
++
++#include "mt7981b-wavlink-wl-wnt100x3.dtsi"
++
++/ {
++	model = "WAVLINK WL-WNT100X3";
++	compatible = "wavlink,wl-wnt100x3", "mediatek,mt7981b";
++};
++
++&spi_nand {
++	mediatek,nmbm;
++	mediatek,bmt-max-ratio = <1>;
++	mediatek,bmt-max-reserved-blocks = <64>;
++
++	partitions {
++		compatible = "fixed-partitions";
++		#address-cells = <1>;
++		#size-cells = <1>;
++
++		partition@0 {
++			label = "bl2";
++			reg = <0x0 0x100000>;
++			read-only;
++		};
++
++		partition@100000 {
++			label = "u-boot-env";
++			reg = <0x100000 0x80000>;
++			read-only;
++		};
++
++		partition@180000 {
++			label = "factory";
++			reg = <0x180000 0x200000>;
++			read-only;
++
++			nvmem-layout {
++				compatible = "fixed-layout";
++				#address-cells = <1>;
++				#size-cells = <1>;
++
++				eeprom_factory: eeprom@0 {
++					reg = <0x0 0x1000>;
++				};
++
++				macaddr_lan: macaddr@3fff4 {
++					reg = <0x3fff4 0x06>;
++				};
++
++				macaddr_wan: macaddr@3fffa {
++					reg = <0x3fffa 0x06>;
++				};
++			};
++		};
++
++		partition@380000 {
++			label = "fip";
++			reg = <0x380000 0x200000>;
++			read-only;
++		};
++
++		partition@580000 {
++			label = "ubi";
++			reg = <0x580000 0x5a00000>;
++		};
++
++		partition@5f80000 {
++			label = "hw";
++			reg = <0x5f80000 0x80000>;
++			read-only;
++		};
++	};
++};
+diff --git a/target/linux/mediatek/dts/mt7981b-wavlink-wl-wnt100x3.dtsi b/target/linux/mediatek/dts/mt7981b-wavlink-wl-wnt100x3.dtsi
+new file mode 100644
+index 00000000000..933ff1f1951
+--- /dev/null
++++ b/target/linux/mediatek/dts/mt7981b-wavlink-wl-wnt100x3.dtsi
+@@ -0,0 +1,167 @@
++// SPDX-License-Identifier: GPL-2.0-only OR MIT
++
++/dts-v1/;
++
++#include "mt7981b.dtsi"
++
++/ {
++	aliases {
++		label-mac-device = &wifi;
++		led-boot = &led_status_blue;
++		led-failsafe = &led_status_blue;
++		led-running = &led_status_blue;
++		led-upgrade = &led_status_blue;
++		serial0 = &uart0;
++	};
++
++	chosen: chosen {
++		stdout-path = "serial0:115200n8";
++	};
++
++	leds {
++		compatible = "gpio-leds";
++
++		led_status_blue: led-0 {
++			function = LED_FUNCTION_STATUS;
++			color = <LED_COLOR_ID_BLUE>;
++			gpios = <&pio 13 GPIO_ACTIVE_LOW>;
++		};
++	};
++
++	gpio-keys {
++		compatible = "gpio-keys";
++
++		button-0 {
++			label = "reset";
++			linux,code = <KEY_RESTART>;
++			gpios = <&pio 11 GPIO_ACTIVE_LOW>;
++		};
++
++		button-1 {
++			label = "mode";
++			linux,code = <BTN_0>;
++			linux,input-type = <EV_SW>;
++			gpios = <&pio 25 GPIO_ACTIVE_LOW>;
++			debounce-interval = <60>;
++		};
++	};
++
++	fan_5v: regulator-fan-5v {
++		compatible = "regulator-fixed";
++		regulator-name = "fan";
++		regulator-min-microvolt = <5000000>;
++		regulator-max-microvolt = <5000000>;
++		gpios = <&pio 22 GPIO_ACTIVE_HIGH>;
++		enable-active-high;
++		regulator-boot-on;
++	};
++};
++
++&pwm {
++	pinctrl-names = "default";
++	pinctrl-0 = <&pwm_pins>;
++	status = "okay";
++};
++
++&fan {
++	pwms = <&pwm 0 40000 0>;
++	fan-supply = <&fan_5v>;
++	status = "okay";
++};
++
++&uart0 {
++	status = "okay";
++};
++
++&watchdog {
++	status = "okay";
++};
++
++&eth {
++	status = "okay";
++	pinctrl-names = "default";
++	pinctrl-0 = <&mdio_pins>;
++
++	gmac0: mac@0 {
++		compatible = "mediatek,eth-mac";
++		reg = <0>;
++		phy-mode = "sgmii";
++		phy-handle = <&en8801sc>;
++		nvmem-cells = <&macaddr_lan>;
++		nvmem-cell-names = "mac-address";
++		managed = "in-band-status";
++	};
++
++	gmac1: mac@1 {
++		compatible = "mediatek,eth-mac";
++		reg = <1>;
++		phy-mode = "gmii";
++		phy-handle = <&int_gbe_phy>;
++		nvmem-cells = <&macaddr_wan>;
++		nvmem-cell-names = "mac-address";
++	};
++};
++
++&mdio_bus {
++	en8801sc: ethernet-phy@29 {
++		compatible = "ethernet-phy-id03a2.9471";
++		phy-mode = "sgmii";
++		reg = <29>;
++		reset-gpios = <&pio 39 GPIO_ACTIVE_LOW>;
++		reset-assert-us = <10000>;
++		reset-deassert-us = <20000>;
++	};
++};
++
++&spi0 {
++	pinctrl-names = "default";
++	pinctrl-0 = <&spi0_flash_pins>;
++	status = "okay";
++
++	spi_nand: flash@0 {
++		#address-cells = <1>;
++		#size-cells = <1>;
++		compatible = "spi-nand";
++		reg = <0>;
++		spi-max-frequency = <52000000>;
++		spi-tx-bus-width = <4>;
++		spi-rx-bus-width = <4>;
++
++		spi-cal-enable;
++		spi-cal-mode = "read-data";
++		spi-cal-datalen = <7>;
++		spi-cal-data = /bits/ 8 <0x53 0x50 0x49 0x4e 0x41 0x4e 0x44>;
++		spi-cal-addrlen = <5>;
++		spi-cal-addr = /bits/ 32 <0x0 0x0 0x0 0x0 0x0>;
++	};
++};
++
++&pio {
++	pwm_pins: pwm0-pins {
++		mux {
++			function = "pwm";
++			groups = "pwm0_1";
++		};
++	};
++
++	spi0_flash_pins: spi0-pins {
++		mux {
++			function = "spi";
++			groups = "spi0", "spi0_wp_hold";
++		};
++	};
++};
++
++&usb_phy {
++	status = "okay";
++};
++
++&xhci {
++	status = "okay";
++};
++
++&wifi {
++	status = "okay";
++	nvmem-cells = <&eeprom_factory>;
++	nvmem-cell-names = "eeprom";
++};
+diff --git a/target/linux/mediatek/filogic/base-files/etc/board.d/02_network b/target/linux/mediatek/filogic/base-files/etc/board.d/02_network
+index 2c0f28f447d..8d977d0e742 100644
+--- a/target/linux/mediatek/filogic/base-files/etc/board.d/02_network
++++ b/target/linux/mediatek/filogic/base-files/etc/board.d/02_network
+@@ -136,7 +136,8 @@ mediatek_setup_interfaces()
+ 	edgecore,eap111|\
+ 	huasifei,wh3000|\
+ 	huasifei,wh3000-pro-emmc|\
+-	huasifei,wh3000-pro-nand)
++	huasifei,wh3000-pro-nand|\
++	wavlink,wl-wnt100x3)
+ 		ucidef_set_interfaces_lan_wan eth0 eth1
+ 		;;
+ 	bazis,ax3000wm|\
+diff --git a/target/linux/mediatek/filogic/base-files/lib/upgrade/platform.sh b/target/linux/mediatek/filogic/base-files/lib/upgrade/platform.sh
+index 8aadf3e0cf5..1440f05ee6e 100644
+--- a/target/linux/mediatek/filogic/base-files/lib/upgrade/platform.sh
++++ b/target/linux/mediatek/filogic/base-files/lib/upgrade/platform.sh
+@@ -240,6 +240,7 @@ platform_do_upgrade() {
+ 	kebidumei,ax3000-u22|\
+ 	totolink,x6000r|\
+ 	wavlink,wl-wn573hx3|\
++	wavlink,wl-wnt100x3|\
+ 	widelantech,wap430x|\
+ 	yuncore,ax835)
+ 		default_do_upgrade "$1"
+diff --git a/target/linux/mediatek/image/filogic.mk b/target/linux/mediatek/image/filogic.mk
+index 1c763f384ab..b9046ff925f 100644
+--- a/target/linux/mediatek/image/filogic.mk
++++ b/target/linux/mediatek/image/filogic.mk
+@@ -3310,6 +3310,19 @@ define Device/wavlink_wl-wn573hx3
+ endef
+ TARGET_DEVICES += wavlink_wl-wn573hx3
+ 
++define Device/wavlink_wl-wnt100x3
++  DEVICE_VENDOR := WAVLINK
++  DEVICE_MODEL := WL-WNT100X3
++  DEVICE_DTS := mt7981b-wavlink-wl-wnt100x3
++  DEVICE_DTS_DIR := ../dts
++  IMAGE_SIZE := 65536k
++  DEVICE_PACKAGES := kmod-usb3 kmod-mt7915e kmod-mt7981-firmware \
++  	mt7981-wo-firmware kmod-hwmon-pwmfan
++  SUPPORTED_DEVICES += mediatek,mt7981-spim-snand-rfb
++  IMAGE/sysupgrade.bin := sysupgrade-tar | append-metadata
++endef
++TARGET_DEVICES += wavlink_wl-wnt100x3
++
+ define Device/widelantech_wap430x
+   DEVICE_VENDOR := Widelantech
+   DEVICE_MODEL := WAP430X

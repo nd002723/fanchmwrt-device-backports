@@ -1,0 +1,110 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Hiroki Utsunomiya <hu-git-ja@proton.me>
+Date: Sat, 4 Apr 2026 00:36:28 +0900
+Subject: [PATCH 27/76] ramips: add support for I-O DATA WN-AX2033GR2
+
+I-O DATA WN-AX2033GR2 is roughly the same as I-O DATA WN-AX2033GR.
+The difference is the Flash Memory (Macronix MX30LF1G18AC).
+
+Specification
+=============
+- SoC: MediaTek MT7621A
+- RAM: DDR3 128 MiB
+- Flash Memory: NAND 128 MiB (Macronix MX30LF1G18AC)
+- Wi-Fi: MediaTek MT7603E
+- Wi-Fi: MediaTek MT7615
+- Ethernet: 5x 10 Mbps / 100 Mbps / 1000 Mbps (1x WAN, 4x LAN)
+- LED: 2x green LED
+- Input: 2x tactile switch, 1x slide switch
+- Power: DC 12V
+
+Flash instruction
+=================
+1. Open the router management page (192.168.0.1).
+2. Update router firmware using "initramfs-kernel.bin".
+3. After updating, run sysupgrade with "sysupgrade.bin".
+
+Signed-off-by: Hiroki Utsunomiya <hu-git-ja@proton.me>
+Link: https://github.com/openwrt/openwrt/pull/22762
+Signed-off-by: Hauke Mehrtens <hauke@hauke-m.de>
+---
+ .../ramips/dts/mt7621_iodata_wn-ax2033gr2.dts | 36 +++++++++++++++++++
+ target/linux/ramips/image/mt7621.mk           |  9 +++++
+ .../mt7621/base-files/lib/upgrade/platform.sh |  1 +
+ 3 files changed, 46 insertions(+)
+ create mode 100644 target/linux/ramips/dts/mt7621_iodata_wn-ax2033gr2.dts
+
+diff --git a/target/linux/ramips/dts/mt7621_iodata_wn-ax2033gr2.dts b/target/linux/ramips/dts/mt7621_iodata_wn-ax2033gr2.dts
+new file mode 100644
+index 00000000000..eb657ae87b6
+--- /dev/null
++++ b/target/linux/ramips/dts/mt7621_iodata_wn-ax2033gr2.dts
+@@ -0,0 +1,36 @@
++// SPDX-License-Identifier: GPL-2.0-or-later OR MIT
++
++#include "mt7621_iodata_wn-xx-xr.dtsi"
++
++/ {
++	compatible = "iodata,wn-ax2033gr2", "mediatek,mt7621-soc";
++	model = "I-O DATA WN-AX2033GR2";
++};
++
++&partitions {
++	partition@6b00000 {
++		label = "Backup";
++		reg = <0x6b00000 0x1480000>;
++		read-only;
++	};
++};
++
++&pcie0 {
++	wifi@0,0 {
++		compatible = "mediatek,mt76";
++		reg = <0x0000 0 0 0 0>;
++		nvmem-cells = <&eeprom_factory_0>;
++		nvmem-cell-names = "eeprom";
++		ieee80211-freq-limit = <2400000 2483000>;
++	};
++};
++
++&pcie1 {
++	wifi@0,0 {
++		compatible = "mediatek,mt76";
++		reg = <0x0000 0 0 0 0>;
++		nvmem-cells = <&eeprom_factory_8000>;
++		nvmem-cell-names = "eeprom";
++		ieee80211-freq-limit = <5000000 5710000>;
++	};
++};
+diff --git a/target/linux/ramips/image/mt7621.mk b/target/linux/ramips/image/mt7621.mk
+index 77448610f9f..cd595e72c43 100644
+--- a/target/linux/ramips/image/mt7621.mk
++++ b/target/linux/ramips/image/mt7621.mk
+@@ -1753,6 +1753,15 @@ define Device/iodata_wn-ax2033gr
+ endef
+ TARGET_DEVICES += iodata_wn-ax2033gr
+ 
++define Device/iodata_wn-ax2033gr2
++  $(Device/iodata_nand)
++  DEVICE_MODEL := WN-AX2033GR2
++  KERNEL_INITRAMFS := $(KERNEL_DTB) | loader-kernel | lzma | \
++	uImage lzma -M 0x434f4d42 -n '3.10(XBH.0)b50' | iodata-mstc-header
++  DEVICE_PACKAGES := kmod-mt7603 kmod-mt7615-firmware -uboot-envtools
++endef
++TARGET_DEVICES += iodata_wn-ax2033gr2
++
+ define Device/iodata_wn-deax1800gr
+   $(Device/dsa-migration)
+   DEVICE_VENDOR := I-O DATA
+diff --git a/target/linux/ramips/mt7621/base-files/lib/upgrade/platform.sh b/target/linux/ramips/mt7621/base-files/lib/upgrade/platform.sh
+index f91f82d76c3..f80d9d92664 100644
+--- a/target/linux/ramips/mt7621/base-files/lib/upgrade/platform.sh
++++ b/target/linux/ramips/mt7621/base-files/lib/upgrade/platform.sh
+@@ -178,6 +178,7 @@ platform_do_upgrade() {
+ 		;;
+ 	iodata,wn-ax1167gr2|\
+ 	iodata,wn-ax2033gr|\
++	iodata,wn-ax2033gr2|\
+ 	iodata,wn-dx1167r|\
+ 	iodata,wn-dx2033gr)
+ 		iodata_mstc_set_flag "debugflag" "factory" "0xfe75" "0,1" "1"

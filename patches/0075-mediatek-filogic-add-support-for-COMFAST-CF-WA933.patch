@@ -1,0 +1,498 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Guillaume RISCHARD <git@stereo.lu>
+Date: Tue, 21 Apr 2026 14:52:53 -0400
+Subject: [PATCH 75/76] mediatek: filogic: add support for COMFAST CF-WA933
+
+The Comfast CF-WA933[1] is an outdoor dual-band WiFi 6 access
+point/router. They also OEM their routers for other providers. This PR
+adds support based on, and substantially updates, the downstream device
+definition[2] from Wayru, one such white label client.
+
+It can be powered by a 12V DC barrel jack (standard 5.5x2.5mm, center
+positive) or via 802.3af POE.
+
+Hardware summary:
+- SoC: MediaTek MT7981A
+- RAM: 256 MiB
+- Flash: SPI-NAND 128 MiB (Factory uses 64M; see details below to use
+  the full 128M!)
+- WiFi (MT7976DA): dual-band 802.11ax
+- Ethernet (MT7531AE): 3x gigabit: 1x WAN + 2x LAN (labeled lan1/lan2).
+- Button: reset
+- LEDs: Power (always on), WLAN, WAN, LAN1, LAN2
+- Serial: Internal header (Four unpopulated headers, clearly labeled)
+
+MAC addresses on the tested unit:
+- Label:   40:a5:ef:f0:5e:0f
+- LAN:     40:a5:ef:f0:5e:0f  Factory 0xe000
+- WAN:     40:a5:ef:f0:5e:10  Factory 0xe000 + 1
+- 2.4 GHz: 40:a5:ef:f0:5e:11  Factory 0x0004
+- 5 GHz:   40:a5:ef:f0:5e:13  Factory 0x8000 + 1
+
+The serial number is stored as an ASCII string at Factory 0xe100.
+
+Disassembly:
+
+Unscrew the six 3mm hex bolts on the dome and the six 5mm bolts on the
+side of the arm, then lift the dome. For reassembly, make sure the large
+O ring is in the groove in the dome.
+
+OpenWrt installation:
+
+1. Connect to Ethernet on the WAN port. Manually set your IP address to
+192.168.1.10 (important!)
+2. Upload the OpenWrt sysupgrade image at http://192.168.1.1
+
+The default U-Boot partition layout does not expose the full flash
+capacity. Change the mtdparts U-Boot environment variable before
+rebooting and then installing the image for the 128 MiB variant through
+the same bootloader recovery/upgrade page.
+
+Method 1: Using the serial console
+
+1. Disassemble the unit and connect to the serial console (115200 8N1).
+   Leave 3.3V disconnected.
+2. On the boot loader, go straight to "0. U-Boot console"
+3. Then enter:
+   setenv mtdparts 'nmbm0:1024k(bl2),512k(u-boot-env),2048k(factory),2048k(fip),117248k(ubi)'
+   saveenv
+   reset
+
+Method 2: From OpenWrt using uboot-envtools
+
+apk add uboot-envtools
+fw_setenv mtdparts 'nmbm0:1024k(bl2),512k(u-boot-env),2048k(factory),2048k(fip),117248k(ubi)'
+reboot
+
+Return to vendor firmware:
+1. If you have changed the mtdparts environment variable, undo the
+   change by setting:
+   mtdparts 'nmbm0:1024k(bl2),512k(u-boot-env),2048k(factory),2048k(fip),65536k(ubi)'
+2. Re-enter the same bootloader recovery/upgrade page.
+3. Upload a stock COMFAST firmware image, e.g. from
+   http://www.comfast.com.cn/index.php?m=content&c=index&a=show&catid=85&id=773
+
+[1]: https://comfastgroup.com/product/cf-wa933/
+[2]: https://github.com/Wayru-Network/wayru-os/tree/main/profiles/prometheus
+
+Signed-off-by: Guillaume RISCHARD <git@stereo.lu>
+Link: https://github.com/openwrt/openwrt/pull/22379
+Signed-off-by: Jonas Jelonek <jelonek.jonas@gmail.com>
+---
+ .../uboot-envtools/files/mediatek_filogic     |   4 +
+ .../dts/mt7981a-comfast-cf-wa933-128m.dts     |  16 ++
+ .../dts/mt7981a-comfast-cf-wa933-common.dtsi  | 265 ++++++++++++++++++
+ .../mediatek/dts/mt7981a-comfast-cf-wa933.dts |  16 ++
+ .../filogic/base-files/etc/board.d/01_leds    |   6 +
+ .../filogic/base-files/etc/board.d/02_network |   4 +
+ target/linux/mediatek/image/filogic.mk        |  32 +++
+ 7 files changed, 343 insertions(+)
+ create mode 100644 target/linux/mediatek/dts/mt7981a-comfast-cf-wa933-128m.dts
+ create mode 100644 target/linux/mediatek/dts/mt7981a-comfast-cf-wa933-common.dtsi
+ create mode 100644 target/linux/mediatek/dts/mt7981a-comfast-cf-wa933.dts
+
+diff --git a/package/boot/uboot-tools/uboot-envtools/files/mediatek_filogic b/package/boot/uboot-tools/uboot-envtools/files/mediatek_filogic
+index 77a2e68ea7a..7196f782783 100644
+--- a/package/boot/uboot-tools/uboot-envtools/files/mediatek_filogic
++++ b/package/boot/uboot-tools/uboot-envtools/files/mediatek_filogic
+@@ -130,6 +130,10 @@ comfast,cf-e393ax|\
+ iptime,ax3000m)
+ 	ubootenv_add_uci_config "/dev/mtd1" "0x0" "0x20000" "0x80000"
+ 	;;
++comfast,cf-wa933|\
++comfast,cf-wa933-128m)
++	ubootenv_add_uci_config "/dev/mtd1" "0x0" "0x20000" "0x20000"
++	;;
+ dlink,aquila-pro-ai-e30-a1|\
+ dlink,aquila-pro-ai-m30-a1|\
+ dlink,aquila-pro-ai-m60-a1)
+diff --git a/target/linux/mediatek/dts/mt7981a-comfast-cf-wa933-128m.dts b/target/linux/mediatek/dts/mt7981a-comfast-cf-wa933-128m.dts
+new file mode 100644
+index 00000000000..ef85310b29a
+--- /dev/null
++++ b/target/linux/mediatek/dts/mt7981a-comfast-cf-wa933-128m.dts
+@@ -0,0 +1,16 @@
++// SPDX-License-Identifier: GPL-2.0-or-later OR MIT
++
++#include "mt7981a-comfast-cf-wa933-common.dtsi"
++
++/ {
++	model = "COMFAST CF-WA933 (128M)";
++	compatible = "comfast,cf-wa933-128m", "mediatek,mt7981";
++};
++
++&partitions {
++	partition@580000 {
++		label = "ubi";
++		reg = <0x580000 0x7280000>;
++		compatible = "linux,ubi";
++	};
++};
+diff --git a/target/linux/mediatek/dts/mt7981a-comfast-cf-wa933-common.dtsi b/target/linux/mediatek/dts/mt7981a-comfast-cf-wa933-common.dtsi
+new file mode 100644
+index 00000000000..59164fa00f2
+--- /dev/null
++++ b/target/linux/mediatek/dts/mt7981a-comfast-cf-wa933-common.dtsi
+@@ -0,0 +1,265 @@
++// SPDX-License-Identifier: GPL-2.0-or-later OR MIT
++
++/dts-v1/;
++#include "mt7981b.dtsi"
++
++/ {
++	aliases {
++		label-mac-device = &gmac0;
++		serial0 = &uart0;
++		led-boot = &led_wlan;
++		led-failsafe = &led_wlan;
++		led-upgrade = &led_wlan;
++	};
++
++	chosen {
++		bootargs-override = "console=ttyS0,115200n8";
++		stdout-path = "serial0:115200n8";
++	};
++
++	memory@40000000 {
++		reg = <0 0x40000000>, <0 0x10000000>; // 256MB
++		device_type = "memory";
++	};
++
++	gpio-keys {
++		compatible = "gpio-keys";
++
++		reset {
++			label = "reset";
++			linux,code = <KEY_RESTART>;
++			gpios = <&pio 1 GPIO_ACTIVE_LOW>;
++		};
++	};
++
++	leds {
++		compatible = "gpio-leds";
++
++		led-lan1 {
++			color = <LED_COLOR_ID_BLUE>;
++			function = LED_FUNCTION_LAN;
++			function-enumerator = <1>;
++			gpios = <&pio 34 GPIO_ACTIVE_LOW>;
++		};
++
++		led-lan2 {
++			color = <LED_COLOR_ID_BLUE>;
++			function = LED_FUNCTION_LAN;
++			function-enumerator = <2>;
++			gpios = <&pio 8 GPIO_ACTIVE_LOW>;
++		};
++
++		led_wlan: led-wlan {
++			color = <LED_COLOR_ID_BLUE>;
++			function = LED_FUNCTION_WLAN;
++			gpios = <&pio 35 GPIO_ACTIVE_LOW>;
++			linux,default-trigger = "network";
++		};
++
++		led-wan {
++			color = <LED_COLOR_ID_BLUE>;
++			function = LED_FUNCTION_WAN;
++			gpios = <&pio 13 GPIO_ACTIVE_LOW>;
++		};
++	};
++};
++
++&eth {
++	status = "okay";
++
++	gmac0: mac@0 {
++		/* LAN */
++		compatible = "mediatek,eth-mac";
++		reg = <0>;
++		phy-mode = "2500base-x";
++		nvmem-cells = <&macaddr_factory_e000 0>;
++		nvmem-cell-names = "mac-address";
++
++		fixed-link {
++			speed = <2500>;
++			full-duplex;
++			pause;
++		};
++	};
++
++	gmac1: mac@1 {
++		/* WAN */
++		compatible = "mediatek,eth-mac";
++		reg = <1>;
++		phy-mode = "gmii";
++		phy-handle = <&int_gbe_phy>;
++		nvmem-cells = <&macaddr_factory_e000 1>;
++		nvmem-cell-names = "mac-address";
++	};
++};
++
++&mdio_bus {
++	switch: switch@1f {
++		compatible = "mediatek,mt7531";
++		reg = <31>;
++		reset-gpios = <&pio 39 GPIO_ACTIVE_HIGH>;
++
++		ports {
++			#address-cells = <1>;
++			#size-cells = <0>;
++
++			port@0 {
++				reg = <0>;
++				label = "lan1";
++			};
++
++			port@1 {
++				reg = <1>;
++				label = "lan2";
++			};
++
++			port@6 {
++				reg = <6>;
++				label = "cpu";
++				ethernet = <&gmac0>;
++				phy-mode = "2500base-x";
++
++				fixed-link {
++					speed = <2500>;
++					full-duplex;
++					pause;
++				};
++			};
++		};
++	};
++};
++
++&crypto {
++	status = "okay";
++};
++
++&pio {
++	spi0_flash_pins: spi0-pins {
++		mux {
++			function = "spi";
++			groups = "spi0", "spi0_wp_hold";
++		};
++		conf-pu {
++			pins = "SPI0_CS", "SPI0_HOLD", "SPI0_WP";
++			drive-strength = <MTK_DRIVE_8mA>;
++			bias-pull-up = <MTK_PUPD_SET_R1R0_11>;
++		};
++		conf-pd {
++			pins = "SPI0_CLK", "SPI0_MOSI", "SPI0_MISO";
++			drive-strength = <MTK_DRIVE_8mA>;
++			bias-pull-down = <MTK_PUPD_SET_R1R0_11>;
++		};
++	};
++};
++
++&spi0 {
++	pinctrl-names = "default";
++	pinctrl-0 = <&spi0_flash_pins>;
++	#address-cells = <1>;
++	#size-cells = <0>;
++	status = "okay";
++
++	spi_nand: spi-nand@0 {
++		compatible = "spi-nand";
++		reg = <0>;
++		spi-max-frequency = <52000000>;
++
++		spi-cal-enable;
++		spi-cal-mode = "read-data";
++		spi-cal-datalen = <7>;
++		spi-cal-data = /bits/ 8 <0x53 0x50 0x49 0x4E 0x41 0x4E 0x44>;
++		spi-cal-addrlen = <5>;
++		spi-cal-addr = /bits/ 32 <0x0 0x0 0x0 0x0 0x0>;
++
++		spi-tx-bus-width = <4>;
++		spi-rx-bus-width = <4>;
++		mediatek,nmbm;
++		mediatek,bmt-max-ratio = <1>;
++		mediatek,bmt-max-reserved-blocks = <64>;
++
++		partitions: partitions {
++			compatible = "fixed-partitions";
++			#address-cells = <1>;
++			#size-cells = <1>;
++
++			partition@0 {
++				label = "BL2";
++				reg = <0x00000 0x0100000>;
++				read-only;
++			};
++
++			partition@100000 {
++				label = "u-boot-env";
++				reg = <0x0100000 0x0080000>;
++			};
++
++			partition@180000 {
++				label = "Factory";
++				reg = <0x180000 0x0200000>;
++				read-only;
++
++				nvmem-layout {
++					compatible = "fixed-layout";
++					#address-cells = <1>;
++					#size-cells = <1>;
++
++					eeprom_factory_0: eeprom@0 {
++						reg = <0x0 0x1000>;
++					};
++
++					macaddr_factory_e000: macaddr@e000 {
++						compatible = "mac-base";
++						reg = <0xe000 0x6>;
++						#nvmem-cell-cells = <1>;
++					};
++
++					macaddr_factory_4: macaddr@4 {
++						compatible = "mac-base";
++						reg = <0x4 0x6>;
++						#nvmem-cell-cells = <1>;
++					};
++
++					macaddr_factory_8000: macaddr@8000 {
++						compatible = "mac-base";
++						reg = <0x8000 0x6>;
++						#nvmem-cell-cells = <1>;
++					};
++				};
++			};
++
++			partition@380000 {
++				label = "FIP";
++				reg = <0x380000 0x0200000>;
++				read-only;
++			};
++		};
++	};
++};
++
++&uart0 {
++	status = "okay";
++};
++
++&watchdog {
++	status = "okay";
++};
++
++&wifi {
++	#address-cells = <1>;
++	#size-cells = <0>;
++	nvmem-cells = <&eeprom_factory_0>;
++	nvmem-cell-names = "eeprom";
++	status = "okay";
++
++	band@0 {
++		reg = <0>;
++		nvmem-cells = <&macaddr_factory_4 0>;
++		nvmem-cell-names = "mac-address";
++	};
++
++	band@1 {
++		reg = <1>;
++		nvmem-cells = <&macaddr_factory_8000 1>;
++		nvmem-cell-names = "mac-address";
++	};
++};
+diff --git a/target/linux/mediatek/dts/mt7981a-comfast-cf-wa933.dts b/target/linux/mediatek/dts/mt7981a-comfast-cf-wa933.dts
+new file mode 100644
+index 00000000000..1e8e6416b01
+--- /dev/null
++++ b/target/linux/mediatek/dts/mt7981a-comfast-cf-wa933.dts
+@@ -0,0 +1,16 @@
++// SPDX-License-Identifier: GPL-2.0-or-later OR MIT
++
++#include "mt7981a-comfast-cf-wa933-common.dtsi"
++
++/ {
++	model = "COMFAST CF-WA933";
++	compatible = "comfast,cf-wa933", "mediatek,mt7981";
++};
++
++&partitions {
++	partition@580000 {
++		label = "ubi";
++		reg = <0x580000 0x4000000>;
++		compatible = "linux,ubi";
++	};
++};
+diff --git a/target/linux/mediatek/filogic/base-files/etc/board.d/01_leds b/target/linux/mediatek/filogic/base-files/etc/board.d/01_leds
+index 149de350e52..ff594cab42b 100644
+--- a/target/linux/mediatek/filogic/base-files/etc/board.d/01_leds
++++ b/target/linux/mediatek/filogic/base-files/etc/board.d/01_leds
+@@ -40,6 +40,12 @@ asus,tuf-ax6000)
+ 	ucidef_set_led_netdev "lan5" "LAN5" "mdio-bus:05:white:lan" "lan5" "link tx rx"
+ 	ucidef_set_led_netdev "wan" "WAN" "mdio-bus:06:white:wan" "eth1" "link tx rx"
+ 	;;
++comfast,cf-wa933|\
++comfast,cf-wa933-128m)
++	ucidef_set_led_netdev "lan1" "lan1" "blue:lan-1" "lan1" "link tx rx"
++	ucidef_set_led_netdev "lan2" "lan2" "blue:lan-2" "lan2" "link tx rx"
++	ucidef_set_led_netdev "wan" "wan" "blue:wan" "eth1" "link tx rx"
++	;;
+ confiabits,mt7981)
+ 	ucidef_set_led_netdev "lan1" "lan1" "blue:lan-1" "lan1" "link tx rx"
+ 	ucidef_set_led_netdev "lan2" "lan2" "blue:lan-2" "lan2" "link tx rx"
+diff --git a/target/linux/mediatek/filogic/base-files/etc/board.d/02_network b/target/linux/mediatek/filogic/base-files/etc/board.d/02_network
+index c073188c72f..a5f55e731b8 100644
+--- a/target/linux/mediatek/filogic/base-files/etc/board.d/02_network
++++ b/target/linux/mediatek/filogic/base-files/etc/board.d/02_network
+@@ -123,6 +123,10 @@ mediatek_setup_interfaces()
+ 	comfast,cf-e393ax)
+ 		ucidef_set_interfaces_lan_wan "lan1" eth1
+ 		;;
++	comfast,cf-wa933|\
++	comfast,cf-wa933-128m)
++		ucidef_set_interfaces_lan_wan "lan1 lan2" eth1
++		;;
+ 	cudy,ap3000wall-v1)
+ 		ucidef_set_interface_lan "lan1 lan2 lan3 lan4 lan5"
+ 		;;
+diff --git a/target/linux/mediatek/image/filogic.mk b/target/linux/mediatek/image/filogic.mk
+index c9033b31a7f..f96ff5fc97e 100644
+--- a/target/linux/mediatek/image/filogic.mk
++++ b/target/linux/mediatek/image/filogic.mk
+@@ -1012,6 +1012,38 @@ define Device/comfast_cf-e393ax
+ endef
+ TARGET_DEVICES += comfast_cf-e393ax
+ 
++define Device/comfast_cf-wa933-common
++  DEVICE_VENDOR := COMFAST
++  DEVICE_MODEL := CF-WA933
++  DEVICE_DTS_DIR := ../dts
++  DEVICE_DTC_FLAGS := --pad 4096
++  DEVICE_DTS_LOADADDR := 0x43f00000
++  DEVICE_PACKAGES := kmod-ledtrig-network kmod-mt7915e kmod-mt7981-firmware mt7981-wo-firmware
++  KERNEL_LOADADDR := 0x44000000
++  UBINIZE_OPTS := -E 5
++  BLOCKSIZE := 128k
++  PAGESIZE := 2048
++  KERNEL_IN_UBI := 1
++  IMAGES := sysupgrade.bin
++  IMAGE/sysupgrade.bin := sysupgrade-tar | append-metadata
++endef
++
++define Device/comfast_cf-wa933
++  DEVICE_VARIANT := 64M
++  DEVICE_DTS := mt7981a-comfast-cf-wa933
++  IMAGE_SIZE := 65536k
++  $(call Device/comfast_cf-wa933-common)
++endef
++TARGET_DEVICES += comfast_cf-wa933
++
++define Device/comfast_cf-wa933-128m
++  DEVICE_VARIANT := 128M
++  DEVICE_DTS := mt7981a-comfast-cf-wa933-128m
++  IMAGE_SIZE := 117248k
++  $(call Device/comfast_cf-wa933-common)
++endef
++TARGET_DEVICES += comfast_cf-wa933-128m
++
+ define Device/comfast_cf-wr632ax-common
+   DEVICE_VENDOR := COMFAST
+   DEVICE_MODEL := CF-WR632AX

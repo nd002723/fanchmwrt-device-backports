@@ -1,0 +1,615 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Mikhail Zhilkin <csharper2005@gmail.com>
+Date: Mon, 15 Jun 2026 17:27:49 +0300
+Subject: [PATCH 67/76] airoha: add initial support for Nokia XG-040G-MF
+
+This commit adds initial support for Nokia XG-040G-MF XG-PON ONU.
+
+Specification
+-------------
+- SoC       : Airoha AN7583DT (dual-core ARM Cortex-A53 1.2 GHz)
+- RAM       : 512 MiB DDR4 (Winbond W664GG6RB-06)
+- Flash     : SPI-NAND 256 MiB (GigaDevice GD5F2GM7UEYIG)
+- WLAN      : -
+- Ethernet  : 1x 2500 Mbps (LAN1, Airoha EN8811HN)
+              3x 10/100/1000 Mbps (LAN2-LAN4, Airoha AN7583 SoC switch)
+- XG-PON    : ECONET EN7572, SLIC: MaxLinear PEF32001VSV12
+- USB       : 1x USB2 (with power control via gpio)
+              1x USB3 (with power control via gpio)
+- Buttons   : Reset
+- LEDs      : 1x Power (green)
+              1x WAN (green)
+              1x WAN (red)
+              4x LAN (green)
+              2x USB (green)
+- Power     : 12 VDC, 1 A
+
+Unsupported functions, limitations and known issues
+---------------------------------------------------
+1. XG-PON won't be available after installing OpenWrt.
+2. USB ports: AN7583 SoC in OpenWrt doesn't support USB at this time.
+
+Installation (UART)
+-------------------
+1. Attach UART and run picocom:
+   picocom -b 115200 --send-cmd "sb -vv" /dev/ttyUSB0
+2. Interrupt boot process by pressing Enter key to enter u-boot
+   Username: telecomadmin
+   Password: nE7jA%5m
+3. Start download firmware via ymodem protocol (via UART):
+   loady 0x85000000
+4. Press Ctrl + A then Ctrl + S in the picocom terminal (if you are using
+   a different terminal, please refer to the documentation) to start
+   upload OpenWrt initramfs image using ymodem protocol. Enter local path
+   to the OpenWrt initramfs image and press Enter.
+5. Load OpenWrt initramfs image from the memory:
+   bootm 0x85000000
+5. Sysupgrade with OpenWrt sysupgrade image
+
+Alternative for the p.3-4. Load and boot OpenWrt initramfs from tftp IP
+192.168.1.254:
+   tftpboot 0x85000000 192.168.1.254:openwrt-initramfs-uImage.itb
+   bootm 0x85000000
+
+Backup and installation (without UART)
+--------------------------------------
+1. Unplug Fiber
+2. Make ONU Reset
+3. Navigate: http://192.168.1.1
+   Username: CMCCAdmin
+   Password: aDm8H%MdA
+4. Go to Apps -> Home Storage -> FTP and check Enable FTP
+5. Go to Apps -> Home Storage -> SAMBA Sharing and check Enable Samba
+6. Visit the following URL to open Telnet:
+   http://192.168.1.1/system.cgi?telnet
+7. Telnet account login:
+   Username: user
+   Password: <see ONU label>
+8. Get root privileges:
+   su user_ftp
+   Password: <see ONU label>
+9. Copy 'squashfs-factory-kernel.bin', 'squashfs-factory-rootfs.bin' and
+   'OpenWrt.mtd2.u-boot-env.bin' (backup of 'u-boot-env' partition from
+   the another Nokia XG-040G-MF with OpenWrt installed)
+9. Attach USB flash drive and check the new dir in /mnt:
+   ls /mnt
+10. Change current dir to the flash drive (change D to your flash drive
+   label):
+   cd /mnt/D
+11. Make backup:
+   for i in 0 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16; \
+   do cat /dev/mtd$i | gzip -9 > mtd$i.bin.gz; done
+12. Check image sizes:
+   ls -l | awk '{if(NR>1) {$5=sprintf("0x%x", $5); print}}'
+13. Write images:
+   mtd_debug erase /dev/mtd0 0x60000 0x20000
+   mtd_debug write /dev/mtd0 0x60000 0x20000 OpenWrt.mtd2.u-boot-env.bin
+   mtd_debug erase /dev/mtd14 0x0 0x2880000
+   mtd_debug write /dev/mtd14 0x0 0x3e6cfc squashfs-factory-kernel.bin
+   mtd_debug erase /dev/mtd11 0x0 0x80e0000
+   mtd_debug write /dev/mtd11 0x0 0x440000 squashfs-factory-rootfs.bin
+   0x3e6cfc - size of your 'squashfs-factory-kernel.bin'
+   0x440000 - size of your 'squashfs-factory-rootfs.bin'
+14. Reboot:
+   reboot
+
+Recovery
+--------
+The same as described in Installation (UART).
+
+Return to stock
+---------------
+1. Follow the steps 1-5 of the Installation (UART)
+2. Once in OpenWrt upload you backup to the /tmp dir of the router:
+   scp -O mtd16.bin.gz root@192.168.1.1:/tmp
+5. Connect to the router using ssh and install kmod-mtd-rw:
+   apk update && apk add kmod-mtd-rw
+   insmod mtd-rw i_want_a_brick=1
+6. Unlock bootloader:
+   mtd unlock bootloader
+7. Restore stock:
+   zcat /tmp/mtd16.bin.gz | mtd write - all_flash
+8. Reboot:
+   reboot
+
+Stock layout
+------------
++-------+------------+---------+---------+
+| mtd   | label      | start   | size    |
++-------+------------+---------+---------+
+| mtd0  | bootloader | 0       | 80000   |
+| mtd1  | romfile    | 80000   | 40000   |
+| mtd14 | nsb_master | c0000   | 2880000 |
+| mtd15 | nsb_slave  | 2940000 | 2880000 |
+| mtd6  | bosa       | 51c0000 | 40000   |
+| mtd7  | ri         | 5200000 | 40000   |
+| mtd8  | flag       | 5240000 | 40000   |
+| mtd9  | flagback   | 5280000 | 40000   |
+| mtd10 | config     | 52c0000 | a00000  |
+| mtd11 | data       | 5cc0000 | 80e0000 |
+| mtd12 | oopsfs     | dda0000 | 400000  |
+| mtd13 | log        | e1a0000 | a00000  |
++-------+------------+---------+---------+
+
+UART
+----
+A view from the back side of the PCB:
+   ------------------------
+   |       GND RX TX
+   |        X  X  X
+Connection parameters:
+115200, 8N1, 3.3V
+
+MAC addresses
+-------------
++---------+-------------------+-----------+
+|         | MAC               | Algorithm |
++---------+-------------------+-----------+
+| LAN     | e0:xx:xx:xx:xx:a0 | label     |
+| WAN     | e0:xx:xx:xx:xx:a1 | label + 1 |
++---------+-------------------+-----------+
+The LAN MAC (hex) was found in 'ri', 0x3e
+
+Signed-off-by: Mikhail Zhilkin <csharper2005@gmail.com>
+Link: https://github.com/openwrt/openwrt/pull/23809
+Signed-off-by: Jonas Jelonek <jelonek.jonas@gmail.com>
+---
+ .../uboot-envtools/files/airoha_an7583        |  23 ++
+ .../an7583/base-files/etc/board.d/01_leds     |  21 ++
+ .../an7583/base-files/etc/board.d/02_network  |   3 +
+ .../an7583/base-files/lib/upgrade/platform.sh |  45 +++
+ .../dts/an7583-nokia_xg-040g-mf-common.dtsi   | 276 ++++++++++++++++++
+ .../airoha/dts/an7583-nokia_xg-040g-mf.dts    |   9 +
+ target/linux/airoha/image/an7583.mk           |  19 ++
+ 7 files changed, 396 insertions(+)
+ create mode 100644 package/boot/uboot-tools/uboot-envtools/files/airoha_an7583
+ create mode 100644 target/linux/airoha/an7583/base-files/etc/board.d/01_leds
+ create mode 100644 target/linux/airoha/an7583/base-files/lib/upgrade/platform.sh
+ create mode 100644 target/linux/airoha/dts/an7583-nokia_xg-040g-mf-common.dtsi
+ create mode 100644 target/linux/airoha/dts/an7583-nokia_xg-040g-mf.dts
+
+diff --git a/package/boot/uboot-tools/uboot-envtools/files/airoha_an7583 b/package/boot/uboot-tools/uboot-envtools/files/airoha_an7583
+new file mode 100644
+index 00000000000..d691a71315a
+--- /dev/null
++++ b/package/boot/uboot-tools/uboot-envtools/files/airoha_an7583
+@@ -0,0 +1,23 @@
++#
++# Copyright (C) 2025 OpenWrt.org
++#
++
++[ -e /etc/config/ubootenv ] && exit 0
++
++touch /etc/config/ubootenv
++
++. /lib/uboot-envtools.sh
++. /lib/functions.sh
++
++board=$(board_name)
++
++case "$board" in
++nokia,xg-040g-mf)
++	ubootenv_add_mtd "u-boot-env" "0x1c000" "0x4000" "0x4000"
++	;;
++esac
++
++config_load ubootenv
++config_foreach ubootenv_add_app_config
++
++exit 0
+diff --git a/target/linux/airoha/an7583/base-files/etc/board.d/01_leds b/target/linux/airoha/an7583/base-files/etc/board.d/01_leds
+new file mode 100644
+index 00000000000..099d51bdbce
+--- /dev/null
++++ b/target/linux/airoha/an7583/base-files/etc/board.d/01_leds
+@@ -0,0 +1,21 @@
++#
++# Copyright (C) 2015 OpenWrt.org
++#
++
++. /lib/functions/uci-defaults.sh
++
++board_config_update
++
++board=$(board_name)
++
++case "$board" in
++nokia,xg-040g-mf)
++	ucidef_set_led_netdev "lan2" "lan2" "mt7530-0:0a:green:lan-2" "lan2" "link tx rx"
++	ucidef_set_led_netdev "lan3" "lan3" "mt7530-0:0b:green:lan-3" "lan3" "link tx rx"
++	ucidef_set_led_netdev "lan4" "lan4" "mt7530-0:0c:green:lan-4" "lan4" "link tx rx"
++	;;
++esac
++
++board_config_flush
++
++exit 0
+diff --git a/target/linux/airoha/an7583/base-files/etc/board.d/02_network b/target/linux/airoha/an7583/base-files/etc/board.d/02_network
+index 077d193ed55..482a18fbfcd 100644
+--- a/target/linux/airoha/an7583/base-files/etc/board.d/02_network
++++ b/target/linux/airoha/an7583/base-files/etc/board.d/02_network
+@@ -14,6 +14,9 @@ an7583_setup_interfaces()
+ 	airoha,an7583-evb)
+ 		ucidef_set_interface_lan "lan1 lan2 lan3 lan4 eth1"
+ 		;;
++	nokia,xg-040g-mf)
++		ucidef_set_interface_lan "lan1 lan2 lan3 lan4"
++		;;
+ 	*)
+ 		echo "Unsupported hardware. Network interfaces not initialized"
+ 		;;
+diff --git a/target/linux/airoha/an7583/base-files/lib/upgrade/platform.sh b/target/linux/airoha/an7583/base-files/lib/upgrade/platform.sh
+new file mode 100644
+index 00000000000..a8557232c28
+--- /dev/null
++++ b/target/linux/airoha/an7583/base-files/lib/upgrade/platform.sh
+@@ -0,0 +1,45 @@
++RAMFS_COPY_BIN='fitblk fit_check_sign'
++
++REQUIRE_IMAGE_METADATA=1
++
++nokia_initial_setup()
++{
++	[ "$(rootfs_type)" = "tmpfs" ] || return 0
++
++	fw_setenv bootcmd "flash read 0xc0000 0x800000 0x85000000; bootm 0x85000000"
++}
++
++platform_check_image() {
++	local board=$(board_name)
++
++	case "$board" in
++	*)
++		nand_do_platform_check "$board" "$1"
++		return $?
++		;;
++	esac
++
++	return 0
++}
++
++platform_do_upgrade() {
++	local board=$(board_name)
++
++	case "$board" in
++	*)
++		nand_do_upgrade "$1"
++		;;
++	esac
++}
++
++platform_pre_upgrade() {
++	local board=$(board_name)
++
++	case "$board" in
++	nokia,xg-040g-mf)
++		nokia_initial_setup
++		;;
++	*)
++		;;
++	esac
++}
+diff --git a/target/linux/airoha/dts/an7583-nokia_xg-040g-mf-common.dtsi b/target/linux/airoha/dts/an7583-nokia_xg-040g-mf-common.dtsi
+new file mode 100644
+index 00000000000..6b61d1ad589
+--- /dev/null
++++ b/target/linux/airoha/dts/an7583-nokia_xg-040g-mf-common.dtsi
+@@ -0,0 +1,276 @@
++// SPDX-License-Identifier: GPL-2.0-only OR MIT
++
++/dts-v1/;
++#include <dt-bindings/leds/common.h>
++#include <dt-bindings/gpio/gpio.h>
++#include <dt-bindings/input/input.h>
++#include "an7583.dtsi"
++#include "an758x-nokia_xg-040g-common.dtsi"
++
++/ {
++	gpio-keys {
++		compatible = "gpio-keys";
++
++		button-0 {
++			label = "reset";
++			linux,code = <KEY_RESTART>;
++			gpios = <&an7583_pinctrl 0 GPIO_ACTIVE_LOW>;
++			debounce-interval = <60>;
++		};
++	};
++
++	leds {
++		compatible = "gpio-leds";
++
++		led-0 {
++			color = <LED_COLOR_ID_GREEN>;
++			function = LED_FUNCTION_WAN;
++			gpios = <&an7583_pinctrl 6 GPIO_ACTIVE_LOW>;
++		};
++
++		led-1 {
++			color = <LED_COLOR_ID_GREEN>;
++			function = LED_FUNCTION_WAN_ONLINE;
++			gpios = <&an7583_pinctrl 7 GPIO_ACTIVE_LOW>;
++		};
++
++		led_power_green: led-2 {
++			color = <LED_COLOR_ID_GREEN>;
++			function = LED_FUNCTION_POWER;
++			gpios = <&an7583_pinctrl 25 GPIO_ACTIVE_LOW>;
++			panic-indicator;
++		};
++
++		led-3 {
++			color = <LED_COLOR_ID_GREEN>;
++			function = LED_FUNCTION_USB;
++			function-enumerator = <1>;
++			gpios = <&an7583_pinctrl 26 GPIO_ACTIVE_LOW>;
++			/*
++			 * AN7583 SoC doesn't support USB at this time
++			 *
++			 * linux,default-trigger = "usbport";
++			 * trigger-sources = <&usb_port1>;
++			 */
++		};
++
++		led-4 {
++			color = <LED_COLOR_ID_RED>;
++			function = LED_FUNCTION_WAN;
++			gpios = <&an7583_pinctrl 27 GPIO_ACTIVE_LOW>;
++		};
++
++		led-5 {
++			color = <LED_COLOR_ID_GREEN>;
++			function = LED_FUNCTION_USB;
++			function-enumerator = <2>;
++			gpios = <&an7583_pinctrl 33 GPIO_ACTIVE_LOW>;
++			/*
++			 * AN7583 SoC doesn't support USB at this time
++			 *
++			 * linux,default-trigger = "usbport";
++			 * trigger-sources = <&usb_port2>;
++			 */
++		};
++	};
++
++	/*
++	 * AN7583 SoC doesn't support USB at this time
++	 *
++	 * reg_3p3v: regulator-3p3v {
++	 * 	compatible = "regulator-fixed";
++	 * 	regulator-always-on;
++	 * 	regulator-boot-on;
++	 * 	regulator-max-microvolt = <3300000>;
++	 * 	regulator-min-microvolt = <3300000>;
++	 *	regulator-name = "fixed-3.3V";
++	 * };
++	 *
++	 * reg_usb_5v: regulator-usb-5v {
++	 * 	compatible = "regulator-fixed";
++	 * 	enable-active-high;
++	 * 	gpio = <&an7583_pinctrl 30 GPIO_ACTIVE_HIGH>;
++	 * 	regulator-boot-on;
++	 * 	regulator-max-microvolt = <5000000>;
++	 * 	regulator-min-microvolt = <5000000>;
++	 * 	regulator-name = "usb-5v";
++	 * };
++	 *
++	 *  *
++	 *  * Controls both USB ports at once
++	 *  *
++	 * usb-power {
++	 * 	compatible = "regulator-output";
++	 * 	vout-supply = <&reg_usb_5v>;
++	 * };
++	 */
++};
++
++&an7583_pinctrl {
++	gpio-ranges = <&an7583_pinctrl 0 2 53>;
++
++	mdio0_pins: mdio0-pins {
++		conf {
++			pins = "mdio_0";
++			output-high;
++		};
++	};
++
++	pcie0_rst_pins: pcie0-rst-pins {
++		conf {
++			pins = "pcie_reset0";
++			drive-open-drain = <1>;
++		};
++	};
++
++	pcie1_rst_pins: pcie1-rst-pins {
++		conf {
++			pins = "pcie_reset1";
++			drive-open-drain = <1>;
++		};
++	};
++
++	gswp1_led0_pins: gswp1-led0-pins {
++		mux {
++			function = "phy1_led0";
++			pins = "gpio1";
++		};
++	};
++
++	gswp2_led0_pins: gswp2-led0-pins {
++		mux {
++			function = "phy2_led0";
++			pins = "gpio2";
++		};
++	};
++
++	gswp3_led0_pins: gswp3-led0-pins {
++		mux {
++			function = "phy3_led0";
++			pins = "gpio3";
++		};
++	};
++
++	gswp4_led0_pins: gswp4-led0-pins {
++		mux {
++			function = "phy4_led0";
++			pins = "gpio4";
++		};
++	};
++};
++
++&mdio_0 {
++	/* Airoha EN8811 2.5Gbps phy */
++	en8811: ethernet-phy@f {
++		compatible = "ethernet-phy-ieee802.3-c45";
++		reg = <0xf>;
++
++		reset-gpios = <&an7583_pinctrl 34 GPIO_ACTIVE_LOW>;
++		reset-assert-us = <10000>;
++		reset-deassert-us = <20000>;
++
++		leds {
++			#address-cells = <1>;
++			#size-cells = <0>;
++
++			led-0 {
++				reg = <0>;
++				color = <LED_COLOR_ID_GREEN>;
++				function = LED_FUNCTION_LAN;
++				function-enumerator = <1>;
++				default-state = "keep";
++			};
++		};
++	};
++};
++
++&switch {
++	status = "okay";
++
++	pinctrl-names = "default";
++	pinctrl-0 = <&mdio0_pins>;
++};
++
++&gsw_port1 {
++	status = "disabled";
++};
++
++&gsw_phy1 {
++	status = "disabled";
++};
++
++&gsw_phy2 {
++	interrupts = <2>;
++
++	pinctrl-names = "gbe-led";
++	pinctrl-0 = <&gswp2_led0_pins>;
++};
++
++&gsw_phy2_led0 {
++	status = "okay";
++
++	color = <LED_COLOR_ID_GREEN>;
++	active-low;
++};
++
++&gsw_phy3 {
++	interrupts = <3>;
++
++	pinctrl-names = "gbe-led";
++	pinctrl-0 = <&gswp3_led0_pins>;
++};
++
++&gsw_phy3_led0 {
++	status = "okay";
++
++	color = <LED_COLOR_ID_GREEN>;
++	active-low;
++};
++
++&gsw_phy4 {
++	interrupts = <4>;
++
++	pinctrl-names = "gbe-led";
++	pinctrl-0 = <&gswp4_led0_pins>;
++};
++
++&gsw_phy4_led0 {
++	status = "okay";
++
++	color = <LED_COLOR_ID_GREEN>;
++	active-low;
++};
++
++&gdm3 {
++	status = "okay";
++
++	openwrt,netdev-name = "lan1";
++
++	phy-handle = <&en8811>;
++	phy-mode = "2500base-x";
++
++	nvmem-cell-names = "mac-address";
++	nvmem-cells = <&macaddr_factory_3e (0)>;
++};
++
++/*
++ * AN7583 SoC doesn't support USB at this time
++ *
++ * &usb0 {
++ * 	status = "okay";
++ * 	#address-cells = <1>;
++ * 	#size-cells = <0>;
++ *
++ * 	vusb33-supply = <&reg_3p3v>;
++ *
++ * 	usb_port1: port@1 {
++ * 		reg = <1>;
++ * 		#trigger-source-cells = <0>;
++ * 	};
++ *
++ * 	usb_port2: port@2 {
++ * 		reg = <2>;
++ * 		#trigger-source-cells = <0>;
++ * 	};
++ * };
++ */
+diff --git a/target/linux/airoha/dts/an7583-nokia_xg-040g-mf.dts b/target/linux/airoha/dts/an7583-nokia_xg-040g-mf.dts
+new file mode 100644
+index 00000000000..880ae8fa1a3
+--- /dev/null
++++ b/target/linux/airoha/dts/an7583-nokia_xg-040g-mf.dts
+@@ -0,0 +1,9 @@
++// SPDX-License-Identifier: GPL-2.0-only OR MIT
++
++#include "an7583-nokia_xg-040g-mf-common.dtsi"
++#include "an758x-nokia_xg-040g-stock-parts.dtsi"
++
++/ {
++	model = "Nokia XG-040G-MF";
++	compatible = "nokia,xg-040g-mf", "airoha,an7583", "airoha,en7583";
++};
+diff --git a/target/linux/airoha/image/an7583.mk b/target/linux/airoha/image/an7583.mk
+index bbc78c65ae4..95cc735c115 100644
+--- a/target/linux/airoha/image/an7583.mk
++++ b/target/linux/airoha/image/an7583.mk
+@@ -23,3 +23,22 @@ define Device/airoha_an7583-evb-emmc
+   DEVICE_PACKAGES := kmod-phy-airoha-en8811h kmod-i2c-an7581
+ endef
+ TARGET_DEVICES += airoha_an7583-evb-emmc
++
++define Device/nokia_xg-040g-mf
++  $(call Device/FitImageLzma)
++  DEVICE_VENDOR := Nokia
++  DEVICE_MODEL := XG-040G-MF
++  DEVICE_DTS := an7583-nokia_xg-040g-mf
++  DEVICE_DTS_CONFIG := config@1
++  BLOCKSIZE := 128k
++  PAGESIZE := 2048
++  UBINIZE_OPTS := -E 5
++  IMAGE_SIZE := 131968k
++  KERNEL_SIZE := 8192k
++  IMAGES += factory-kernel.bin factory-rootfs.bin
++  IMAGE/factory-kernel.bin := append-kernel
++  IMAGE/factory-rootfs.bin := append-ubi | check-size
++  IMAGE/sysupgrade.bin := sysupgrade-tar | append-metadata
++  DEVICE_PACKAGES := kmod-phy-airoha-en8811h
++endef
++TARGET_DEVICES += nokia_xg-040g-mf

@@ -1,0 +1,599 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Ahmed Naseef <naseefkm@gmail.com>
+Date: Mon, 6 Apr 2026 14:19:15 +0400
+Subject: [PATCH 69/76] mediatek: add support for Airtel AirFiber AAP4221ZY
+
+The Airtel AirFiber AAP4221ZY is an ISP-provided router that is part
+of the ISP's Fixed Wireless Access (FWA) solution. The FWA system
+consists of two units: an outdoor 5G unit and this indoor Wi-Fi router
+connected via a PoE ethernet link. This commit adds support for the
+indoor unit.
+
+The OEM appears to be Zyxel with model number EX3310-T0, although this
+is not printed on any label and only found in the vendor firmware DTS,
+bootlog, and other internal references.
+
+Hardware
+--------
+SOC: MediaTek MT7981B
+CPU: 2 core Cortex-A53 (1300MHz)
+RAM: 512MB DDR3
+FLASH: 512MB SPI-NAND (Micron, 4096 page, 256KiB block)
+WIFI: MediaTek MT7976 802.11ax 2x2 2.4GHz + 5GHz
+ETH: Airoha AN8855 GbE Switch (2x LAN) + MT7981 internal GbE PHY (WAN)
+POE: WAN port provides PoE to the outdoor unit (GPIO 10)
+UART: 3V3 115200 8N1
+
+Bootloader
+----------
+The device uses BL2 -> U-Boot -> Zyxel zloader chain. U-Boot has a
+hardcoded command to always launch zloader (similar to the Zyxel
+EX5601-T0, see commit 1c05388ab04c). zloader is the Zyxel secondary
+bootloader which handles dual-boot (ubi/ubi2 A/B scheme), firmware
+verification, and PoE port enablement.
+
+zloader requires a UBI volume named "zyfwinfo" containing a 256-byte
+metadata structure with a "ZYXE" magic header and a valid checksum.
+Without this volume, zloader refuses to boot the firmware. The
+zyfwinfo structure also contains a sequence number (range 0-9999,
+wraps around) used to select which firmware bank to boot - the bank
+with the higher sequence number wins. This OpenWrt image sets it to
+5555 to always win over stock firmware starting at 0.
+
+During sysupgrade, platform.sh refreshes the zyfwinfo volume before
+writing kernel and rootfs to UBI, as rootfs_data is sized to fill the
+remaining space.
+
+Note that OpenWrt can only be flashed to ubi (mtd6). The zloader
+appends rootubi=ubi or rootubi=ubi2 to the kernel bootargs based on
+which partition it selects, but OpenWrt cannot understand this
+parameter, so the firmware must always reside on the first bank (ubi).
+
+UART access
+-----------
+Serial console output is restricted by the U-Boot environment variable
+EngDebugFlag which is 0x00 by default. Users need to first obtain root
+access on the vendor firmware and run:
+
+  fw_setenv EngDebugFlag 0x01
+
+Then reboot. Connect UART and press Enter to enter the zloader shell
+(ZHAL> prompt). Use the ATGU command to switch to the U-Boot shell.
+Note: ATGU must be entered twice to get the MT7981> prompt:
+
+  ZHAL> ATGU
+  [zloader reloads]
+  ZHAL> ATGU
+  MT7981>
+
+Installation
+------------
+1. Enable UART access as described above.
+2. Enter U-Boot shell (ATGU twice from ZHAL> prompt).
+3. Load the initramfs image via TFTP:
+
+  MT7981> setenv ipaddr 192.168.1.1
+  MT7981> setenv serverip 192.168.1.2
+  MT7981> tftpboot 0x46000000 openwrt-mediatek-filogic-airtel_aap4221zy-initramfs-kernel.bin
+  MT7981> bootm 0x46000000
+
+4. Once OpenWrt boots from initramfs, transfer and flash the
+   sysupgrade image:
+
+  sysupgrade -n /tmp/openwrt-mediatek-filogic-airtel_aap4221zy-squashfs-sysupgrade.bin
+
+5. The device will reboot and zloader will boot OpenWrt from flash.
+
+Signed-off-by: Ahmed Naseef <naseefkm@gmail.com>
+Link: https://github.com/openwrt/openwrt/pull/22809
+Signed-off-by: Jonas Jelonek <jelonek.jonas@gmail.com>
+---
+ .../mediatek/dts/mt7981b-airtel-aap4221zy.dts | 416 ++++++++++++++++++
+ .../filogic/base-files/etc/board.d/02_network |   3 +
+ .../base-files/lib/upgrade/platform.sh        |  27 ++
+ target/linux/mediatek/image/filogic.mk        |  17 +
+ 4 files changed, 463 insertions(+)
+ create mode 100644 target/linux/mediatek/dts/mt7981b-airtel-aap4221zy.dts
+
+diff --git a/target/linux/mediatek/dts/mt7981b-airtel-aap4221zy.dts b/target/linux/mediatek/dts/mt7981b-airtel-aap4221zy.dts
+new file mode 100644
+index 00000000000..c2374ec9459
+--- /dev/null
++++ b/target/linux/mediatek/dts/mt7981b-airtel-aap4221zy.dts
+@@ -0,0 +1,416 @@
++// SPDX-License-Identifier: GPL-2.0-or-later OR MIT
++
++/dts-v1/;
++#include <dt-bindings/gpio/gpio.h>
++#include <dt-bindings/input/input.h>
++#include <dt-bindings/leds/common.h>
++#include <dt-bindings/pinctrl/mt65xx.h>
++
++#include "mt7981b.dtsi"
++
++/ {
++	model = "Airtel AirFiber AAP4221ZY";
++	compatible = "airtel,aap4221zy", "mediatek,mt7981";
++
++	aliases {
++		serial0 = &uart0;
++		label-mac-device = &gmac1;
++		led-boot = &led_internet_amber;
++		led-failsafe = &led_internet_red;
++		led-running = &led_internet_white;
++		led-upgrade = &led_internet_amber;
++	};
++
++	chosen {
++		stdout-path = "serial0:115200n8";
++		bootargs = "console=ttyS0,115200n1 earlycon=uart8250,mmio32,0x11002000";
++	};
++
++	memory@40000000 {
++		reg = <0 0x40000000>, <0 0x20000000>;
++		device_type = "memory";
++	};
++
++	gpio-keys {
++		compatible = "gpio-keys";
++
++		button-wps {
++			label = "wps";
++			gpios = <&pio 0 GPIO_ACTIVE_LOW>;
++			linux,code = <KEY_WPS_BUTTON>;
++		};
++
++		button-reset {
++			label = "reset";
++			gpios = <&pio 1 GPIO_ACTIVE_LOW>;
++			linux,code = <KEY_RESTART>;
++		};
++	};
++
++	leds {
++		compatible = "gpio-leds";
++
++		led_internet_red: led-internet-red {
++			color = <LED_COLOR_ID_RED>;
++			function = LED_FUNCTION_INDICATOR;
++			function-enumerator = <0>;
++			gpios = <&pio 5 GPIO_ACTIVE_LOW>;
++		};
++
++		led_internet_white: led-internet-white {
++			color = <LED_COLOR_ID_WHITE>;
++			function = LED_FUNCTION_INDICATOR;
++			function-enumerator = <1>;
++			gpios = <&pio 6 GPIO_ACTIVE_LOW>;
++		};
++
++		led-wifi-blue {
++			color = <LED_COLOR_ID_BLUE>;
++			function = LED_FUNCTION_WLAN;
++			gpios = <&pio 7 GPIO_ACTIVE_LOW>;
++			linux,default-trigger = "network";
++		};
++
++		led_internet_amber: led-internet-amber {
++			color = <LED_COLOR_ID_AMBER>;
++			function = LED_FUNCTION_INDICATOR;
++			function-enumerator = <2>;
++			gpios = <&pio 9 GPIO_ACTIVE_HIGH>;
++		};
++	};
++
++	gpio_export {
++		compatible = "gpio-export";
++
++		poe_enable {
++			gpio-export,name = "poe-enable";
++			gpio-export,output = <1>;
++			gpios = <&pio 10 GPIO_ACTIVE_HIGH>;
++		};
++	};
++};
++
++&eth {
++	status = "okay";
++
++	gmac0: mac@0 {
++		compatible = "mediatek,eth-mac";
++		reg = <0>;
++		phy-mode = "2500base-x";
++
++		nvmem-cells = <&macaddr_factory_4 1>;
++		nvmem-cell-names = "mac-address";
++
++		fixed-link {
++			speed = <2500>;
++			full-duplex;
++			pause;
++		};
++	};
++
++	gmac1: mac@1 {
++		compatible = "mediatek,eth-mac";
++		reg = <1>;
++		label = "wan";
++		phy-mode = "gmii";
++		phy-handle = <&int_gbe_phy>;
++
++		nvmem-cells = <&macaddr_factory_4 0>;
++		nvmem-cell-names = "mac-address";
++	};
++};
++
++&mdio_bus {
++	mfd: mfd@1 {
++		compatible = "airoha,an8855-mfd";
++		reg = <1>;
++	};
++};
++
++&mfd {
++	efuse {
++		compatible = "airoha,an8855-efuse";
++		#nvmem-cell-cells = <0>;
++
++		nvmem-layout {
++			compatible = "fixed-layout";
++			#address-cells = <1>;
++			#size-cells = <1>;
++
++			shift_sel_port0_tx_a: shift-sel-port0-tx-a@c {
++				reg = <0xc 0x4>;
++			};
++
++			shift_sel_port0_tx_b: shift-sel-port0-tx-b@10 {
++				reg = <0x10 0x4>;
++			};
++
++			shift_sel_port0_tx_c: shift-sel-port0-tx-c@14 {
++				reg = <0x14 0x4>;
++			};
++
++			shift_sel_port0_tx_d: shift-sel-port0-tx-d@18 {
++				reg = <0x18 0x4>;
++			};
++
++			shift_sel_port1_tx_a: shift-sel-port1-tx-a@1c {
++				reg = <0x1c 0x4>;
++			};
++
++			shift_sel_port1_tx_b: shift-sel-port1-tx-b@20 {
++				reg = <0x20 0x4>;
++			};
++
++			shift_sel_port1_tx_c: shift-sel-port1-tx-c@24 {
++				reg = <0x24 0x4>;
++			};
++
++			shift_sel_port1_tx_d: shift-sel-port1-tx-d@28 {
++				reg = <0x28 0x4>;
++			};
++		};
++	};
++
++	ethernet-switch {
++		compatible = "airoha,an8855-switch";
++		reset-gpios = <&pio 39 GPIO_ACTIVE_HIGH>;
++		airoha,ext-surge;
++
++		ports {
++			#address-cells = <1>;
++			#size-cells = <0>;
++
++			port@0 {
++				reg = <0>;
++				label = "lan1";
++				phy-mode = "internal";
++				phy-handle = <&internal_phy1>;
++			};
++
++			port@1 {
++				reg = <1>;
++				label = "lan2";
++				phy-mode = "internal";
++				phy-handle = <&internal_phy2>;
++			};
++
++			port@5 {
++				reg = <5>;
++				label = "cpu";
++				ethernet = <&gmac0>;
++				phy-mode = "2500base-x";
++
++				fixed-link {
++					speed = <2500>;
++					full-duplex;
++					pause;
++				};
++			};
++		};
++	};
++
++	mdio {
++		compatible = "airoha,an8855-mdio";
++		#address-cells = <1>;
++		#size-cells = <0>;
++
++		internal_phy1: phy@1 {
++			reg = <1>;
++
++			nvmem-cells = <&shift_sel_port0_tx_a>,
++					<&shift_sel_port0_tx_b>,
++					<&shift_sel_port0_tx_c>,
++					<&shift_sel_port0_tx_d>;
++			nvmem-cell-names = "tx_a", "tx_b", "tx_c", "tx_d";
++		};
++
++		internal_phy2: phy@2 {
++			reg = <2>;
++
++			nvmem-cells = <&shift_sel_port1_tx_a>,
++					<&shift_sel_port1_tx_b>,
++					<&shift_sel_port1_tx_c>,
++					<&shift_sel_port1_tx_d>;
++			nvmem-cell-names = "tx_a", "tx_b", "tx_c", "tx_d";
++		};
++	};
++};
++
++&int_gbe_phy {
++	pinctrl-names = "default";
++	pinctrl-0 = <&gbe_led0_pins>, <&gbe_led1_pins>;
++	status = "okay";
++};
++
++&int_gbe_phy_led0 {
++	function = LED_FUNCTION_WAN;
++	color = <LED_COLOR_ID_AMBER>;
++	status = "okay";
++};
++
++&int_gbe_phy_led1 {
++	function = LED_FUNCTION_WAN;
++	color = <LED_COLOR_ID_GREEN>;
++	status = "okay";
++};
++
++&sgmiisys0 {
++	/delete-property/ mediatek,pnswap;
++};
++
++&pio {
++	gbe_led0_pins: gbe-led0-pins {
++		mux {
++			function = "led";
++			groups = "gbe_led0";
++		};
++	};
++
++	gbe_led1_pins: gbe-led1-pins {
++		mux {
++			function = "led";
++			groups = "gbe_led1";
++		};
++	};
++
++	spi0_flash_pins: spi0-pins {
++		mux {
++			function = "spi";
++			groups = "spi0", "spi0_wp_hold";
++		};
++
++		conf-pu {
++			pins = "SPI0_CS", "SPI0_HOLD", "SPI0_WP";
++			drive-strength = <MTK_DRIVE_8mA>;
++			bias-pull-up = <MTK_PUPD_SET_R1R0_11>;
++		};
++
++		conf-pd {
++			pins = "SPI0_CLK", "SPI0_MOSI", "SPI0_MISO";
++			drive-strength = <MTK_DRIVE_8mA>;
++			bias-pull-down = <MTK_PUPD_SET_R1R0_11>;
++		};
++	};
++};
++
++&spi0 {
++	pinctrl-names = "default";
++	pinctrl-0 = <&spi0_flash_pins>;
++	status = "okay";
++
++	spi_nand: flash@0 {
++		compatible = "spi-nand";
++		reg = <0>;
++		spi-max-frequency = <52000000>;
++		spi-tx-bus-width = <4>;
++		spi-rx-bus-width = <4>;
++
++		spi-cal-enable;
++		spi-cal-mode = "read-data";
++		spi-cal-datalen = <7>;
++		spi-cal-data = /bits/ 8 <0x53 0x50 0x49 0x4e 0x41 0x4e 0x44>;
++		spi-cal-addrlen = <5>;
++		spi-cal-addr = /bits/ 32 <0x0 0x0 0x0 0x0 0x0>;
++
++		mediatek,nmbm;
++		mediatek,bmt-max-ratio = <1>;
++		mediatek,bmt-max-reserved-blocks = <64>;
++
++		partitions {
++			compatible = "fixed-partitions";
++			#address-cells = <1>;
++			#size-cells = <1>;
++
++			partition@0 {
++				label = "BL2";
++				reg = <0x0 0x100000>;
++				read-only;
++			};
++
++			partition@100000 {
++				label = "u-boot-env";
++				reg = <0x100000 0x80000>;
++			};
++
++			partition@180000 {
++				label = "Factory";
++				reg = <0x180000 0x200000>;
++				read-only;
++
++				nvmem-layout {
++					compatible = "fixed-layout";
++					#address-cells = <1>;
++					#size-cells = <1>;
++
++					eeprom_factory_0: eeprom@0 {
++						reg = <0x0 0x1000>;
++					};
++
++					macaddr_factory_4: macaddr@4 {
++						compatible = "mac-base";
++						reg = <0x4 0x6>;
++						#nvmem-cell-cells = <1>;
++					};
++				};
++			};
++
++			partition@380000 {
++				label = "FIP";
++				reg = <0x380000 0x1c0000>;
++				read-only;
++			};
++
++			partition@540000 {
++				label = "zloader";
++				reg = <0x540000 0x40000>;
++				read-only;
++			};
++
++			partition@580000 {
++				label = "ubi";
++				reg = <0x580000 0x8000000>;
++			};
++
++			partition@8580000 {
++				label = "ubi2";
++				reg = <0x8580000 0x8000000>;
++				read-only;
++			};
++
++			partition@10580000 {
++				label = "zyubi";
++				reg = <0x10580000 0xda80000>;
++			};
++		};
++	};
++};
++
++&uart0 {
++	status = "okay";
++};
++
++&watchdog {
++	status = "okay";
++};
++
++&wifi {
++	status = "okay";
++	nvmem-cells = <&eeprom_factory_0>;
++	nvmem-cell-names = "eeprom";
++
++	#address-cells = <1>;
++	#size-cells = <0>;
++
++	band@0 {
++		reg = <0>;
++		nvmem-cells = <&macaddr_factory_4 3>;
++		nvmem-cell-names = "mac-address";
++	};
++
++	band@1 {
++		reg = <1>;
++		nvmem-cells = <&macaddr_factory_4 4>;
++		nvmem-cell-names = "mac-address";
++	};
++};
++
+diff --git a/target/linux/mediatek/filogic/base-files/etc/board.d/02_network b/target/linux/mediatek/filogic/base-files/etc/board.d/02_network
+index 5879c158ed2..304f3175848 100644
+--- a/target/linux/mediatek/filogic/base-files/etc/board.d/02_network
++++ b/target/linux/mediatek/filogic/base-files/etc/board.d/02_network
+@@ -43,6 +43,9 @@ mediatek_setup_interfaces()
+ 	acer,vero-w6m)
+ 		ucidef_set_interfaces_lan_wan "lan1 lan2 lan3" internet
+ 		;;
++	airtel,aap4221zy)
++		ucidef_set_interfaces_lan_wan "lan1 lan2" wan
++		;;
+ 	arcadyan,mozart)
+ 		ucidef_set_interfaces_lan_wan "lan0 eth1" eth2
+ 		;;
+diff --git a/target/linux/mediatek/filogic/base-files/lib/upgrade/platform.sh b/target/linux/mediatek/filogic/base-files/lib/upgrade/platform.sh
+index afedde45add..5c8d165da42 100644
+--- a/target/linux/mediatek/filogic/base-files/lib/upgrade/platform.sh
++++ b/target/linux/mediatek/filogic/base-files/lib/upgrade/platform.sh
+@@ -215,6 +215,33 @@ platform_do_upgrade() {
+ 		CI_ROOTPART="rootfs"
+ 		emmc_do_upgrade "$1"
+ 		;;
++	airtel,aap4221zy)
++		# ZyXEL zloader requires a "zyfwinfo" UBI volume with valid
++		# metadata (magic + checksum) to select the boot partition.
++		# Without it, zloader refuses to boot the firmware. It has to be
++		# written before nand_do_upgrade(), which sizes rootfs_data to
++		# fill the remaining space.
++		local ubidev="$(nand_attach_ubi "${CI_UBIPART:-ubi}")"
++		[ "$ubidev" ] || nand_do_upgrade_failed
++		local vol="$(nand_find_volume "$ubidev" zyfwinfo)"
++		if [ ! "$vol" ]; then
++			# rootfs_data may occupy all LEBs, nand_do_upgrade() recreates it
++			[ "$(nand_find_volume "$ubidev" rootfs_data)" ] && \
++				ubirmvol /dev/$ubidev -N rootfs_data
++			if ! ubimkvol /dev/$ubidev -N zyfwinfo -s 256 -t dynamic; then
++				echo "cannot create zyfwinfo volume"
++				nand_do_upgrade_failed
++			fi
++			vol="$(nand_find_volume "$ubidev" zyfwinfo)"
++		fi
++		local tmpfile="/tmp/zyfwinfo.bin"
++		echo -n -e '\x45\x58\x59\x5A\x02\x00\xB3\x15\x00\x01\x00\x00' > "$tmpfile"
++		dd if=/dev/zero bs=1 count=242 >> "$tmpfile" 2>/dev/null
++		echo -n -e '\x1B\x02' >> "$tmpfile"
++		ubiupdatevol /dev/$vol -s 256 "$tmpfile"
++		rm -f "$tmpfile"
++		nand_do_upgrade "$1"
++		;;
+ 	asus,rt-ax52|\
+ 	asus,rt-ax57m|\
+ 	asus,rt-ax59u|\
+diff --git a/target/linux/mediatek/image/filogic.mk b/target/linux/mediatek/image/filogic.mk
+index 03411d43ff8..5b04b1efdac 100644
+--- a/target/linux/mediatek/image/filogic.mk
++++ b/target/linux/mediatek/image/filogic.mk
+@@ -388,6 +388,23 @@ define Device/airpi_ap3000m
+ endef
+ TARGET_DEVICES += airpi_ap3000m
+ 
++define Device/airtel_aap4221zy
++  DEVICE_VENDOR := Airtel
++  DEVICE_MODEL := AirFiber AAP4221ZY
++  DEVICE_ALT0_VENDOR := Zyxel
++  DEVICE_ALT0_MODEL := EX3310-T0
++  DEVICE_DTS := mt7981b-airtel-aap4221zy
++  DEVICE_DTS_DIR := ../dts
++  DEVICE_PACKAGES := kmod-ledtrig-network kmod-mt7915e kmod-mt7981-firmware mt7981-wo-firmware
++  UBINIZE_OPTS := -E 5
++  BLOCKSIZE := 256k
++  PAGESIZE := 4096
++  IMAGE_SIZE := 131072k
++  KERNEL_IN_UBI := 1
++  IMAGE/sysupgrade.bin := sysupgrade-tar | append-metadata
++endef
++TARGET_DEVICES += airtel_aap4221zy
++
+ define Device/arcadyan_mozart
+   DEVICE_VENDOR := Arcadyan
+   DEVICE_MODEL := Mozart

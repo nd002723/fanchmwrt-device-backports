@@ -1,0 +1,175 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: INAGAKI Hiroshi <musashino.open@gmail.com>
+Date: Mon, 2 Mar 2026 21:31:03 +0800
+Subject: [PATCH 32/76] mediatek: add support for ELECOM WRC-X6000GSD
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+ELECOM WRC-X6000GSD is a 4804Mbps 4xMIMO 2.4/5 GHz 11ax (Wi-Fi 6) router
+with 2.5Gbps WAN (stock: 1Gbps max.), based on MT7986B
+
+Specification:
+
+- SoC             : MediaTek MT7986BLA
+- RAM             : DDR3 512 MiB (SoC)
+- Flash           : Winbond 128MiB SPI NAND (W25N01GVZEIG)
+- WLAN            : 2.4/5 GHz 4T4R (MediaTek MT7986)
+- Ethernet        : 5x 10/100/1000(/2500) Mbps
+  - wan           : Maxlinear Ethernet GPY211C (max. 2500M)
+  - lan           : MediaTek MT7531 (max. 1000M)
+- LEDs/Keys (GPIO): 11x/4x
+- UART            : through-hole on PCB (J1)
+  - assignment    : 3.3V, TX, RX, NC, GND from tri-angle marking
+  - settings      : 115200n8
+- Power           : 12 VDC, 2 A
+
+Flash layout:
+dev:  offset     size        name
+mtd0: 0x00000000 0x00100000 "BL2"
+mtd1: 0x00100000 0x00080000 "Ubootenv"
+mtd2: 0x00180000 0x00200000 "Factory"
+mtd3: 0x00380000 0x00200000 "FIP"
+mtd4: 0x00580000 0x00020000 "Fwheader"
+mtd5: 0x005a0000 0x03200000 "ubi"
+mtd6: 0x037a0000 0x00380000 "Config"
+mtd7: 0x03b20000 0x00020000 "Fwheader_2"
+mtd8: 0x03b40000 0x03200000 "ubi_2"
+mtd9: 0x06d40000 0x00380000 "Config_2"
+mtd10: 0x070c0000 0x00100000 "persist"
+mtd11: 0x071c0000 0x00040000 "Mrd"
+mtd12: 0x07200000 0x00380000 "Backup"
+
+Flash instruction using factory.bin image:
+
+1. Boot WRC-X6000GSD in router mode normally
+2. Access to the WebUI ("http://192.168.2.1/") on the device
+   -> その他設定 (Other settings)
+   -> フォームウェア更新 (Update firmware)
+   -> ローカルファイル指定 (Specify local file)
+3. Select the OpenWrt factory.bin image and click apply ("適用") button
+4. Wait ~120 seconds to complete flashing
+
+Switching to the stock firmware:
+
+1. Load the elecom.sh script
+   . /lib/upgrade/elecom.sh
+
+2. Check the current index of firmware partition
+   mstc_rw_bootnum
+
+3. Set the bootnum to opposite value between 1 and 2
+   mstc_rw_bootnum value
+
+   example:
+   - step2 returned "1": mstc_rw_bootnum 2
+   - step2 returned "2": mstc_rw_bootnum 1
+
+4. Reboot, to stock FW
+
+5. Flash the stock FW to fuly revert back to original.
+
+Notes:
+
+- With the stock firmware, it will flash to another partition and
+  toggle boot to that partition when any firmware is flashed.
+  For example when booting on ubi, the new firmware will be flashed
+  to ubi_2 and the router will boot from ubi_2 afterwards.
+  The 5th byte of the Persist partition is the boot value (0x01 or 0x02).
+
+- bootmenu_delay=0 is set from factory so uboot menu is hidden by
+  default.
+
+- The hardware of WRC-X6000GSD is almost identical to WRC-X6000QS, but
+  WAN (labeled as "INTERNET") port is limited to 1000 Mbps on stock FW.
+  On OpenWrt FW, 2500 Mbps connection is available on that port.
+
+MAC Addresses:
+
+LAN   : 38:97:A4:xx:xx:58 (Factory, 0x2A(hex)/Ubootenv, "ethaddr"(text))
+WAN   : 38:97:A4:xx:xx:5B (Factory, 0x24(hex))
+2.4GHz: 38:97:A4:xx:xx:59 (Factory, 0x4(hex))
+5GHz  : 38:97:A4:xx:xx:5A (Factory, 0xA(hex)
+
+Signed-off-by: INAGAKI Hiroshi <musashino.open@gmail.com>
+Link: https://github.com/openwrt/openwrt/pull/22926
+Signed-off-by: Hauke Mehrtens <hauke@hauke-m.de>
+---
+ .../mediatek/dts/mt7986b-elecom-wrc-x6000gsd.dts   |  8 ++++++++
+ .../filogic/base-files/etc/board.d/01_leds         |  1 +
+ .../filogic/base-files/lib/upgrade/platform.sh     |  2 ++
+ target/linux/mediatek/image/filogic.mk             | 14 ++++++++++++++
+ 4 files changed, 25 insertions(+)
+ create mode 100644 target/linux/mediatek/dts/mt7986b-elecom-wrc-x6000gsd.dts
+
+diff --git a/target/linux/mediatek/dts/mt7986b-elecom-wrc-x6000gsd.dts b/target/linux/mediatek/dts/mt7986b-elecom-wrc-x6000gsd.dts
+new file mode 100644
+index 00000000000..c756df6cf93
+--- /dev/null
++++ b/target/linux/mediatek/dts/mt7986b-elecom-wrc-x6000gsd.dts
+@@ -0,0 +1,8 @@
++// SPDX-License-Identifier: GPL-2.0-or-later OR MIT
++
++#include "mt7986b-elecom-wrc-x6000.dtsi"
++
++/ {
++	model = "ELECOM WRC-X6000GSD";
++	compatible = "elecom,wrc-x6000gsd", "mediatek,mt7986b";
++};
+diff --git a/target/linux/mediatek/filogic/base-files/etc/board.d/01_leds b/target/linux/mediatek/filogic/base-files/etc/board.d/01_leds
+index 97b69bbdf6e..453ad91e676 100644
+--- a/target/linux/mediatek/filogic/base-files/etc/board.d/01_leds
++++ b/target/linux/mediatek/filogic/base-files/etc/board.d/01_leds
+@@ -100,6 +100,7 @@ cudy,wbr3000uax-v1-ubootmod)
+ elecom,wrc-x3000gs3)
+ 	ucidef_set_led_netdev "wan" "wan" "green:wan" "wan"
+ 	;;
++elecom,wrc-x6000gsd|\
+ elecom,wrc-x6000qs)
+ 	ucidef_set_led_netdev "wan" "wan" "mdio-bus:05:white:wan" "wan" "link tx rx"
+ 	;;
+diff --git a/target/linux/mediatek/filogic/base-files/lib/upgrade/platform.sh b/target/linux/mediatek/filogic/base-files/lib/upgrade/platform.sh
+index 0410ccc0745..6d7446b9fe1 100644
+--- a/target/linux/mediatek/filogic/base-files/lib/upgrade/platform.sh
++++ b/target/linux/mediatek/filogic/base-files/lib/upgrade/platform.sh
+@@ -228,6 +228,7 @@ platform_do_upgrade() {
+ 		nand_do_upgrade "$1"
+ 		;;
+ 	elecom,wrc-x3000gs3|\
++	elecom,wrc-x6000gsd|\
+ 	elecom,wrc-x6000qs)
+ 		local bootnum="$(mstc_rw_bootnum)"
+ 		case "$bootnum" in
+@@ -445,6 +446,7 @@ platform_pre_upgrade() {
+ 	buffalo,wsr-6000ax8)
+ 		buffalo_initial_setup
+ 		;;
++	elecom,wrc-x6000gsd|\
+ 	elecom,wrc-x6000qs)
+ 		local delay=$(fw_printenv -n bootmenu_delay)
+ 
+diff --git a/target/linux/mediatek/image/filogic.mk b/target/linux/mediatek/image/filogic.mk
+index b4969f87c1a..20c2502fb87 100644
+--- a/target/linux/mediatek/image/filogic.mk
++++ b/target/linux/mediatek/image/filogic.mk
+@@ -1560,6 +1560,20 @@ define Device/elecom_wrc-x3000gs3
+ endef
+ TARGET_DEVICES += elecom_wrc-x3000gs3
+ 
++define Device/elecom_wrc-x6000gsd
++  DEVICE_VENDOR := ELECOM
++  DEVICE_MODEL := WRC-X6000GSD
++  DEVICE_DTS := mt7986b-elecom-wrc-x6000gsd
++  DEVICE_DTS_DIR := ../dts
++  DEVICE_DTS_LOADADDR := 0x47000000
++  IMAGES += factory.bin
++  IMAGE/factory.bin := sysupgrade-tar | mstc-header 5.04(XZR.0)b90 YTC@ | \
++	elecom-product-header WRC-X6000GS
++  IMAGE/sysupgrade.bin := sysupgrade-tar | append-metadata
++  DEVICE_PACKAGES := kmod-mt7915e kmod-mt7986-firmware mt7986-wo-firmware
++endef
++TARGET_DEVICES += elecom_wrc-x6000gsd
++
+ define Device/elecom_wrc-x6000qs
+   DEVICE_VENDOR := ELECOM
+   DEVICE_MODEL := WRC-X6000QS

@@ -1,0 +1,548 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: INAGAKI Hiroshi <musashino.open@gmail.com>
+Date: Sun, 22 Mar 2026 23:29:17 +0900
+Subject: [PATCH 28/76] mediatek: add support for BUFFALO WSR-3000AX4P
+
+BUFFALO WSR-3000AX4P is a 2.4/5 GHz band 11ax (Wi-Fi 6) router, based on
+MT7981B.
+
+Specification:
+
+- SoC             : MediaTek MT7981B
+- RAM             : DDR4 512 MiB (ESMT M16U4G16256A-KJBG)
+- Flash           : SPI-NAND 128 MiB (Winbond W25N01GVZEIG)
+- WLAN            : 2.4/5 GHz 2T2R (MediaTek MT7981B (SoC))
+- Ethernet        : 4x 10/100/1000 Mbps
+  - switch        : MediaTek MT7531A
+- LEDs/Keys (GPIO): 6x/4x
+- UART            : through-hole on PCB (J1)
+  - assignment    : 3.3V, GND, TX, RX from tri-angle marking
+  - settings      : 115200n8
+- Power           : 12 VDC, 1.5 A (Max. 14.4 W)
+
+Flash instruction using initramfs image:
+
+1. Prepare a TFTP server with 192.168.11.2
+2. Rename initramfs image to "linux.ubi-recovery" and put it to the TFTP
+   directory
+3. Hold the "AOSS" button and power on WSR-3000AX4P, release after 7~
+   seconds
+4. The bootloader automatically downloads the initramfs image and boots
+   with it
+5. After booting, upload a sysupgrade image to the device and perform
+   sysupgrade with it
+6. Wait ~100 seconds to complete flashing
+
+Reverting to stock image:
+
+1. Download a official firmware and decrypt it by buffalo-enc
+
+   example:
+
+     buffalo-enc -i <official .bin> -o fw.dec -d -O 0xC8 -l
+
+2. Upload the decrypted image to the device
+3. Flash the image to the UBI in "ubi_kernel" partition on the device
+
+   example:
+
+     . /lib/upgrade/common.sh
+     . /lib/upgrade/nand.sh
+     CI_UBIPART="ubi_kernel" nand_do_flash_file fw.dec
+
+4. Reboot the device
+
+   reboot
+
+Notes:
+
+- WSR-3000AX4P has 2x OS images ("ubi"/"Kernel2"), but the second one
+  is only for backup and not used for booting.
+
+  image handling on the bootloader:
+
+  - "ubi" is broken     : "Kernel2" --(copy)--> "ubi"
+  - "Kernel2" is broken : "ubi" --(copy)--> "Kernel2"
+  - "ubi" != "Kernel2"  :
+    - boot_select=0: "ubi" --(copy)--> "Kernel2"
+    - boot_select=1: "Kernel2" --(copy)--> "ubi", set boot_select to '0'
+
+MAC Addresses:
+
+LAN   : EC:5A:31:xx:xx:50 (board_data, "mac" (text))
+WAN   : EC:5A:31:xx:xx:50
+2.4GHz: EC:5A:31:xx:xx:52
+5GHz  : EC:5A:31:xx:xx:59
+
+Signed-off-by: INAGAKI Hiroshi <musashino.open@gmail.com>
+Link: https://github.com/openwrt/openwrt/pull/22587
+Signed-off-by: Hauke Mehrtens <hauke@hauke-m.de>
+---
+ .../dts/mt7981b-buffalo-wsr-3000ax4p.dts      | 335 ++++++++++++++++++
+ .../filogic/base-files/etc/board.d/02_network |   1 +
+ .../base-files/lib/upgrade/platform.sh        |  55 ++-
+ target/linux/mediatek/image/filogic.mk        |  10 +
+ 4 files changed, 394 insertions(+), 7 deletions(-)
+ create mode 100644 target/linux/mediatek/dts/mt7981b-buffalo-wsr-3000ax4p.dts
+
+diff --git a/target/linux/mediatek/dts/mt7981b-buffalo-wsr-3000ax4p.dts b/target/linux/mediatek/dts/mt7981b-buffalo-wsr-3000ax4p.dts
+new file mode 100644
+index 00000000000..065f385ecd5
+--- /dev/null
++++ b/target/linux/mediatek/dts/mt7981b-buffalo-wsr-3000ax4p.dts
+@@ -0,0 +1,335 @@
++// SPDX-License-Identifier: GPL-2.0-or-later OR MIT
++
++/dts-v1/;
++
++#include "mt7981b.dtsi"
++
++/ {
++	model = "BUFFALO WSR-3000AX4P";
++	compatible = "buffalo,wsr-3000ax4p", "mediatek,mt7981b";
++
++	aliases {
++		label-mac-device = &gmac0;
++		led-boot = &led_power_green;
++		led-failsafe = &led_power_orange;
++		led-running = &led_power_green;
++		led-upgrade = &led_power_green;
++		serial0 = &uart0;
++	};
++
++	chosen {
++		bootargs-override = "earlycon";
++		stdout-path = "serial0:115200n8";
++	};
++
++	memory@40000000 {
++		device_type = "memory";
++		reg = <0x0 0x40000000 0x0 0x20000000>;
++	};
++
++	keys {
++		compatible = "gpio-keys";
++
++		button-wps {
++			label = "wps";
++			gpios = <&pio 0 GPIO_ACTIVE_LOW>;
++			linux,code = <KEY_WPS_BUTTON>;
++		};
++
++		button-reset {
++			label = "reset";
++			gpios = <&pio 1 GPIO_ACTIVE_LOW>;
++			linux,code = <KEY_RESTART>;
++		};
++
++		switch-wireless-bridge {
++			label = "wb";
++			gpios = <&pio 23 GPIO_ACTIVE_LOW>;
++			linux,code = <BTN_0>;
++			linux,input_type = <EV_SW>;
++		};
++
++		switch-router {
++			label = "router";
++			gpios = <&pio 24 GPIO_ACTIVE_LOW>;
++			linux,code = <BTN_1>;
++			linux,input_type = <EV_SW>;
++		};
++	};
++
++	leds {
++		compatible = "gpio-leds";
++
++		led_power_orange: led-1 {
++			function = LED_FUNCTION_POWER;
++			color = <LED_COLOR_ID_ORANGE>;
++			gpios = <&pio 9 GPIO_ACTIVE_HIGH>;
++		};
++
++		led_power_green: led-2 {
++			function = LED_FUNCTION_POWER;
++			color = <LED_COLOR_ID_GREEN>;
++			gpios = <&pio 10 GPIO_ACTIVE_HIGH>;
++		};
++
++		led-3 {
++			function = LED_FUNCTION_WLAN;
++			color = <LED_COLOR_ID_ORANGE>;
++			gpios = <&pio 11 GPIO_ACTIVE_HIGH>;
++		};
++
++		led-4 {
++			function = LED_FUNCTION_WLAN;
++			color = <LED_COLOR_ID_GREEN>;
++			gpios = <&pio 12 GPIO_ACTIVE_HIGH>;
++		};
++
++		led-5 {
++			function = LED_FUNCTION_WAN_ONLINE;
++			color = <LED_COLOR_ID_GREEN>;
++			gpios = <&pio 13 GPIO_ACTIVE_HIGH>;
++		};
++
++		led-6 {
++			function = "router";
++			color = <LED_COLOR_ID_GREEN>;
++			gpios = <&pio 22 GPIO_ACTIVE_HIGH>;
++		};
++	};
++};
++
++&eth {
++	pinctrl-0 = <&mdio_pins>;
++	pinctrl-names = "default";
++	status = "okay";
++	#address-cells = <1>;
++	#size-cells = <0>;
++
++	gmac0: mac@0 {
++		compatible = "mediatek,eth-mac";
++		reg = <0>;
++		phy-connection-type = "2500base-x";
++
++		nvmem-cells = <&macaddr_bdata_mac 0>;
++		nvmem-cell-names = "mac-address";
++
++		fixed-link {
++			speed = <2500>;
++			full-duplex;
++			pause;
++		};
++	};
++};
++
++&mdio_bus {
++	switch@1f {
++		compatible = "mediatek,mt7531";
++		reg = <31>;
++		reset-gpios = <&pio 39 GPIO_ACTIVE_HIGH>;
++
++		ports {
++			#address-cells = <1>;
++			#size-cells = <0>;
++
++			port@0 {
++				reg = <0>;
++				label = "wan";
++			};
++
++			port@1 {
++				reg = <1>;
++				label = "lan1";
++			};
++
++			port@2 {
++				reg = <2>;
++				label = "lan2";
++			};
++
++			port@4 {
++				reg = <4>;
++				label = "lan3";
++			};
++
++			port@6 {
++				reg = <6>;
++				ethernet = <&gmac0>;
++				phy-connection-type = "2500base-x";
++
++				fixed-link {
++					speed = <2500>;
++					full-duplex;
++					pause;
++				};
++			};
++		};
++	};
++};
++
++&pio {
++	spi0_flash_pins: spi0-pins {
++		mux {
++			function = "spi";
++			groups = "spi0", "spi0_wp_hold";
++		};
++
++		conf-pu {
++			pins = "SPI0_CS", "SPI0_HOLD", "SPI0_WP";
++			drive-strength = <MTK_DRIVE_8mA>;
++			bias-pull-up = <MTK_PUPD_SET_R1R0_11>;
++		};
++
++		conf-pd {
++			pins = "SPI0_CLK", "SPI0_MOSI", "SPI0_MISO";
++			drive-strength = <MTK_DRIVE_8mA>;
++			bias-pull-down = <MTK_PUPD_SET_R1R0_11>;
++		};
++	};
++};
++
++&spi0 {
++	pinctrl-0 = <&spi0_flash_pins>;
++	pinctrl-names = "default";
++	status = "okay";
++
++	flash@0 {
++		compatible = "spi-nand";
++		reg = <0>;
++
++		spi-max-frequency = <52000000>;
++		spi-tx-bus-width = <4>;
++		spi-rx-bus-width = <4>;
++
++		mediatek,nmbm;
++		mediatek,bmt-max-ratio = <1>;
++		mediatek,bmt-max-reserved-blocks = <64>;
++		mediatek,bmt-remap-range =
++			<0x0000000 0x580000>,  /*     BL2 - FIP */
++			<0x3980000 0x4880000>; /*  glbcfg - debug_log */
++
++		partitions {
++			compatible = "fixed-partitions";
++			#address-cells = <1>;
++			#size-cells = <1>;
++
++			partition@0 {
++				label = "BL2";
++				reg = <0x0 0x100000>;
++				read-only;
++			};
++
++			partition@100000 {
++				label = "u-boot-env";
++				reg = <0x100000 0x80000>;
++			};
++
++			partition@180000 {
++				label = "Factory";
++				reg = <0x180000 0x200000>;
++				read-only;
++
++				nvmem-layout {
++					compatible = "fixed-layout";
++					#address-cells = <1>;
++					#size-cells = <1>;
++
++					eeprom_factory_0: eeprom@0 {
++						reg = <0x0 0x1000>;
++					};
++				};
++			};
++
++			partition@380000 {
++				label = "FIP";
++				reg = <0x380000 0x200000>;
++				read-only;
++			};
++
++			/* stock: "ubi" */
++			partition@580000 {
++				label = "ubi_kernel";
++				reg = <0x580000 0x1a00000>;
++			};
++
++			partition@1f80000 {
++				label = "Kernel2";
++				reg = <0x1f80000 0x1a00000>;
++			};
++
++			partition@3980000 {
++				label = "glbcfg";
++				reg = <0x3980000 0x200000>;
++				read-only;
++			};
++
++			partition@3b80000 {
++				label = "seccfg";
++				reg = <0x3b80000 0x200000>;
++				read-only;
++			};
++
++			partition@3d80000 {
++				label = "board_data";
++				reg = <0x3d80000 0x200000>;
++				read-only;
++
++				nvmem-layout {
++					compatible = "ascii-eq-delim-env";
++
++					macaddr_bdata_mac: mac {
++						compatible = "mac-base";
++						#nvmem-cell-cells = <1>;
++					};
++				};
++			};
++
++			partition@3f80000 {
++				label = "debug_log";
++				reg = <0x3f80000 0x900000>;
++				read-only;
++			};
++
++			/*
++			 * stock: "WTB"
++			 *
++			 * The "WTB" partition is for "ネット脅威ブロッカー"
++			 * (en: Web Threat Blocker, DiXiM Security).
++			 * By default, a UBI with "dpi" volume exists. This UBI will
++			 * be rebuilt automatically if no "dpi" volume exists while
++			 * booting with stock firmware.
++			 */
++			partition@4880000 {
++				label = "ubi";
++				reg = <0x4880000 0x2c00000>;
++			};
++		};
++	};
++};
++
++&uart0 {
++	status = "okay";
++};
++
++&watchdog {
++	status = "okay";
++};
++
++&wifi {
++	nvmem-cells = <&eeprom_factory_0>;
++	nvmem-cell-names = "eeprom";
++	status = "okay";
++	#address-cells = <1>;
++	#size-cells = <0>;
++
++	band@0 {
++		reg = <0>;
++		nvmem-cells = <&macaddr_bdata_mac 2>;
++		nvmem-cell-names = "mac-address";
++	};
++
++	band@1 {
++		reg = <1>;
++		nvmem-cells = <&macaddr_bdata_mac 9>;
++		nvmem-cell-names = "mac-address";
++	};
++};
+diff --git a/target/linux/mediatek/filogic/base-files/etc/board.d/02_network b/target/linux/mediatek/filogic/base-files/etc/board.d/02_network
+index af0fee263d8..e140da74254 100644
+--- a/target/linux/mediatek/filogic/base-files/etc/board.d/02_network
++++ b/target/linux/mediatek/filogic/base-files/etc/board.d/02_network
+@@ -46,6 +46,7 @@ mediatek_setup_interfaces()
+ 	asus,rt-ax59u|\
+ 	asus,zenwifi-bt8|\
+ 	asus,zenwifi-bt8-ubootmod|\
++	buffalo,wsr-3000ax4p|\
+ 	cetron,ct3003|\
+ 	cmcc,a10-stock|\
+ 	cmcc,a10-ubootmod|\
+diff --git a/target/linux/mediatek/filogic/base-files/lib/upgrade/platform.sh b/target/linux/mediatek/filogic/base-files/lib/upgrade/platform.sh
+index b2e5a6fc529..2064e08cd76 100644
+--- a/target/linux/mediatek/filogic/base-files/lib/upgrade/platform.sh
++++ b/target/linux/mediatek/filogic/base-files/lib/upgrade/platform.sh
+@@ -74,6 +74,41 @@ xiaomi_initial_setup()
+ 	esac
+ }
+ 
++update_oem_ubi_volume() {
++	local oem_volume_name="$1"
++	local oem_volume_part="${2:-$CI_UBIPART}"
++	local oem_volume_size="$3"
++	local oem_volume_data="$4"
++	local oem_ubivol
++	local mtdnum
++	local ubidev
++
++	mtdnum=$(find_mtd_index "$oem_volume_part")
++	if [ ! "$mtdnum" ]; then
++		return
++	fi
++
++	ubidev=$(nand_find_ubi "$oem_volume_part")
++	if [ ! "$ubidev" ]; then
++		ubiattach --mtdn="$mtdnum"
++		ubidev=$(nand_find_ubi "$oem_volume_part")
++	fi
++	[ "$ubidev" ] || return
++
++	oem_ubivol=$(nand_find_volume "$ubidev" "$oem_volume_name")
++	[ "$oem_ubivol" ] || return
++
++	ubirmvol "/dev/$ubidev" -N "$oem_volume_name"
++
++	# return if no new size specified
++	[ "$oem_volume_size" ] || return
++	ubimkvol "/dev/$ubidev" -N "$oem_volume_name" -s "$oem_volume_size"
++
++	# return if no new data specified
++	[ "$oem_volume_data" ] || return
++	ubiupdatevol "/dev/$ubidev" -s "$oem_volume_size" "$oem_volume_data"
++}
++
+ platform_do_upgrade() {
+ 	local board=$(board_name)
+ 
+@@ -162,6 +197,14 @@ platform_do_upgrade() {
+ 		CI_KERNPART="linux"
+ 		nand_do_upgrade "$1"
+ 		;;
++	buffalo,wsr-3000ax4p|\
++	xiaomi,mi-router-ax3000t|\
++	xiaomi,mi-router-wr30u-stock|\
++	xiaomi,redmi-router-ax6000-stock)
++		CI_KERN_UBIPART="ubi_kernel"
++		CI_ROOT_UBIPART="ubi"
++		nand_do_upgrade "$1"
++		;;
+ 	buffalo,wsr-6000ax8|\
+ 	cudy,wr3000h-v1|\
+ 	cudy,wr3000p-v1|\
+@@ -258,13 +301,6 @@ platform_do_upgrade() {
+ 			;;
+ 		esac
+ 		;;
+-	xiaomi,mi-router-ax3000t|\
+-	xiaomi,mi-router-wr30u-stock|\
+-	xiaomi,redmi-router-ax6000-stock)
+-		CI_KERN_UBIPART=ubi_kernel
+-		CI_ROOT_UBIPART=ubi
+-		nand_do_upgrade "$1"
+-		;;
+ 	*)
+ 		nand_do_upgrade "$1"
+ 		;;
+@@ -400,6 +436,11 @@ platform_pre_upgrade() {
+ 	asus,zenwifi-bt8)
+ 		asus_initial_setup
+ 		;;
++	buffalo,wsr-3000ax4p)
++		update_oem_ubi_volume "rootfs"      "ubi_kernel" "4"
++		update_oem_ubi_volume "rootfs_data" "ubi_kernel"
++		update_oem_ubi_volume "dpi"         "ubi"
++		;;
+ 	buffalo,wsr-6000ax8)
+ 		buffalo_initial_setup
+ 		;;
+diff --git a/target/linux/mediatek/image/filogic.mk b/target/linux/mediatek/image/filogic.mk
+index 63ac7f94075..821052a4dfe 100644
+--- a/target/linux/mediatek/image/filogic.mk
++++ b/target/linux/mediatek/image/filogic.mk
+@@ -814,6 +814,16 @@ define Device/bazis_ax3000wm
+ endef
+ TARGET_DEVICES += bazis_ax3000wm
+ 
++define Device/buffalo_wsr-3000ax4p
++  DEVICE_VENDOR := BUFFALO
++  DEVICE_MODEL := WSR-3000AX4P
++  DEVICE_DTS_DIR := ../dts
++  DEVICE_DTS := mt7981b-buffalo-wsr-3000ax4p
++  IMAGE/sysupgrade.bin := sysupgrade-tar | append-metadata
++  DEVICE_PACKAGES := kmod-mt7915e kmod-mt7981-firmware mt7981-wo-firmware
++endef
++TARGET_DEVICES += buffalo_wsr-3000ax4p
++
+ define Device/buffalo_wsr-6000ax8
+   DEVICE_MODEL := WSR-6000AX8
+   DEVICE_VENDOR := Buffalo

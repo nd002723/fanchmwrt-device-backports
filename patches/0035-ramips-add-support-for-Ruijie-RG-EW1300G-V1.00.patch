@@ -1,0 +1,297 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Matt Brent <git@mattzfiber.co.za>
+Date: Wed, 4 Feb 2026 01:54:58 +0200
+Subject: [PATCH 35/76] ramips: add support for Ruijie RG-EW1300G (V1.00)
+
+The RG-EW1300G is a router with 1 x WAN and 3 x LAN gigabit ports.
+The router runs on Ruijie OS by default.
+
+- Specifications:
+
+* SoC: MT7621A
+* RAM: 128MB DDR3
+* Flash: 16MB SPI NOR flash (GD25Q128C)
+* WiFi0: Mediatek MT7615 2.4GHz 802.11b/g/n
+* WiFi1: Mediatek MT7615 5GHz 802.11ac
+* Ethernet: MT7530, 4x 1000Base-T.
+* UART: Serial console - As marked on PCB, baudrate is 57600. DO NOT CONNECT 3.3V.
+* Buttons: Reset, WPS.
+* LED: Programmable LEDs via GPIO working for Red+Green status, and Mesh/WPS at the rear of the chassis.
+
+- Default Flash:
+```
+GD25Q128C(c8 40180000) (16384 Kbytes)
+mtd .name = raspi, .size = 0x01000000 (16M) .erasesize = 0x00010000 (64K) .numeraseregions = 0
+6 cmdlinepart partitions found on MTD device raspi
+Creating 6 MTD partitions on "raspi":
+0x000000000000-0x000000050000 : "u-boot"
+0x000000050000-0x000000060000 : "u-boot-env"
+0x000000060000-0x000000070000 : "Factory"
+0x000000070000-0x000000080000 : "product_info"
+0x000000080000-0x000000090000 : "kdump"
+0x000000090000-0x000001000000 : "firmware"
+0x00000031a847-0x000001000000 : "rootfs"
+mtd: partition "rootfs" must either start or end on erase block boundary or be smaller than an erase block -- forcing read-only
+mtd: partition "rootfs_data" created automatically, ofs=0xae0000, len=0x520000
+0x000000ae0000-0x000001000000 : "rootfs_data"
+register mt_drv
+```
+
+```
+cat /proc/mtd
+dev:    size   erasesize  name
+mtd0: 00050000 00010000 "u-boot"
+mtd1: 00010000 00010000 "u-boot-env"
+mtd2: 00010000 00010000 "factory"
+mtd3: 00010000 00010000 "product_info"
+mtd4: 00010000 00010000 "kdump"
+mtd5: 00f70000 00010000 "firmware"
+mtd6: 0028a847 00010000 "kernel"
+mtd7: 00ce57b9 00010000 "rootfs"
+mtd8: 00520000 00010000 "rootfs_data"
+```
+
+- Installation:
+
+1. Open the case, solder to the marked 4 pin header
+2. Connect it to a USB-UART TTL (do not connect to 3.3v)
+3. Open a terminal with baud 57600.
+4. Power on device, and repeatedly press "2" key to catch bootloader option
+5. Set IP, TFTP server IP, and image file to load (eg, openwrt-ramips-mt7621-ruijie_rg-ew1300g-v1-squashfs-sysupgrade.bin)
+6. System will reboot into OpenWRT.
+
+Signed-off-by: Matt Brent <git@mattzfiber.co.za>
+Link: https://github.com/openwrt/openwrt/pull/21864
+Signed-off-by: Hauke Mehrtens <hauke@hauke-m.de>
+---
+ .../dts/mt7621_ruijie_rg-ew1300g-v1.dts       | 159 ++++++++++++++++++
+ target/linux/ramips/image/mt7621.mk           |  10 ++
+ .../mt7621/base-files/etc/board.d/02_network  |   6 +-
+ .../etc/hotplug.d/ieee80211/10_fix_wifi_mac   |   3 +-
+ 4 files changed, 175 insertions(+), 3 deletions(-)
+ create mode 100644 target/linux/ramips/dts/mt7621_ruijie_rg-ew1300g-v1.dts
+
+diff --git a/target/linux/ramips/dts/mt7621_ruijie_rg-ew1300g-v1.dts b/target/linux/ramips/dts/mt7621_ruijie_rg-ew1300g-v1.dts
+new file mode 100644
+index 00000000000..a9a74994da0
+--- /dev/null
++++ b/target/linux/ramips/dts/mt7621_ruijie_rg-ew1300g-v1.dts
+@@ -0,0 +1,159 @@
++// SPDX-License-Identifier: GPL-2.0-or-later OR MIT
++
++#include "mt7621.dtsi"
++
++#include <dt-bindings/gpio/gpio.h>
++#include <dt-bindings/input/input.h>
++#include <dt-bindings/leds/common.h>
++
++/ {
++	compatible = "ruijie,rg-ew1300g-v1", "mediatek,mt7621-soc";
++	model = "Ruijie RG-EW1300G v1";
++
++	aliases {
++		led-boot = &led_status_red;
++		led-failsafe = &led_status_green;
++		led-running = &led_status_green;
++		led-upgrade = &led_status_red;
++	};
++
++	chosen {
++		bootargs = "console=ttyS0,57600n8";
++	};
++
++	leds {
++		compatible = "gpio-leds";
++		led_status_green: status_green {
++			function = LED_FUNCTION_STATUS;
++			color = <LED_COLOR_ID_GREEN>;
++			gpios = <&gpio 16 GPIO_ACTIVE_LOW>;
++		};
++
++		led_status_red: status_red {
++			function = LED_FUNCTION_STATUS;
++			color = <LED_COLOR_ID_RED>;
++			gpios = <&gpio 15 GPIO_ACTIVE_LOW>;
++		};
++
++		led_mesh_green: mesh_green {
++			function = LED_FUNCTION_WPS;
++			color = <LED_COLOR_ID_GREEN>;
++			gpios = <&gpio 6 GPIO_ACTIVE_LOW>;
++		};
++	};
++
++	keys {
++		compatible = "gpio-keys";
++
++		button-mesh {
++			label = "mesh";
++			gpios = <&gpio 14 GPIO_ACTIVE_LOW>;
++			linux,code = <KEY_WPS_BUTTON>;
++		};
++
++		button-reset {
++			label = "reset";
++			gpios = <&gpio 7 GPIO_ACTIVE_LOW>;
++			linux,code = <KEY_RESTART>;
++		};
++	};
++};
++
++&spi0 {
++	status = "okay";
++
++	flash@0 {
++		compatible = "jedec,spi-nor";
++		reg = <0>;
++		spi-max-frequency = <50000000>;
++
++		partitions {
++			compatible = "fixed-partitions";
++			#address-cells = <1>;
++			#size-cells = <1>;
++
++			partition@0 {
++				label = "u-boot";
++				reg = <0x000000 0x50000>;
++				read-only;
++			};
++
++			partition@50000 {
++				label = "u-boot-env";
++				reg = <0x50000 0x10000>;
++				read-only;
++			};
++
++			partition@60000 {
++				label = "factory";
++				reg = <0x60000 0x10000>;
++				read-only;
++
++				nvmem-layout {
++					compatible = "fixed-layout";
++					#address-cells = <1>;
++					#size-cells = <1>;
++
++					eeprom_factory_0: eeprom@0 {
++						reg = <0x0 0x4da8>;
++					};
++				};
++			};
++
++			partition@70000 {
++				label = "product_info";
++				reg = <0x70000 0x10000>;
++				read-only;
++			};
++
++			partition@80000 {
++				label = "kdump";
++				reg = <0x80000 0x10000>;
++				read-only;
++			};
++
++			partition@90000 {
++				compatible = "denx,uimage";
++				label = "firmware";
++				reg = <0x90000 0xf70000>;
++			};
++		};
++	};
++};
++
++&pcie {
++	status = "okay";
++};
++
++&pcie0 {
++	wifi@0,0 {
++		compatible = "mediatek,mt76";
++		reg = <0x0000 0 0 0 0>;
++		nvmem-cells = <&eeprom_factory_0>;
++		nvmem-cell-names = "eeprom";
++	};
++};
++
++&switch0 {
++	ports {
++		port@0 {
++			status = "okay";
++			label = "wan";
++		};
++
++		port@1 {
++			status = "okay";
++			label = "lan3";
++		};
++
++		port@2 {
++			status = "okay";
++			label = "lan2";
++		};
++
++		port@3 {
++			status = "okay";
++			label = "lan1";
++		};
++	};
++};
+diff --git a/target/linux/ramips/image/mt7621.mk b/target/linux/ramips/image/mt7621.mk
+index cd595e72c43..54a8bed1439 100644
+--- a/target/linux/ramips/image/mt7621.mk
++++ b/target/linux/ramips/image/mt7621.mk
+@@ -2739,6 +2739,16 @@ define Device/ruijie_rg-ew1200g-pro-v1.1
+ endef
+ TARGET_DEVICES += ruijie_rg-ew1200g-pro-v1.1
+ 
++define Device/ruijie_rg-ew1300g-v1
++  $(Device/dsa-migration)
++  IMAGE_SIZE := 15808k
++  DEVICE_VENDOR := Ruijie
++  DEVICE_MODEL := RG-EW1300G
++  DEVICE_VARIANT := v1
++  DEVICE_PACKAGES := kmod-mt7615-firmware
++endef
++TARGET_DEVICES += ruijie_rg-ew1300g-v1
++
+ define Device/samknows_whitebox-v8
+   $(Device/dsa-migration)
+   $(Device/uimage-lzma-loader)
+diff --git a/target/linux/ramips/mt7621/base-files/etc/board.d/02_network b/target/linux/ramips/mt7621/base-files/etc/board.d/02_network
+index 39800ffd7f7..1f36a415345 100644
+--- a/target/linux/ramips/mt7621/base-files/etc/board.d/02_network
++++ b/target/linux/ramips/mt7621/base-files/etc/board.d/02_network
+@@ -190,7 +190,8 @@ ramips_setup_interfaces()
+ 		ucidef_set_interface_lan "lan1 lan2 lan3 lan4"
+ 		ucidef_set_interface "qtn" ifname "eth1" protocol "static" ipaddr "1.1.1.1" netmask "255.255.255.0"
+ 		;;
+-	ruijie,rg-ew1200g-pro-v1.1)
++	ruijie,rg-ew1200g-pro-v1.1|\
++	ruijie,rg-ew1300g-v1)
+ 		ucidef_set_interfaces_lan_wan "lan3 lan2 lan1" "wan"
+ 		;;
+ 	*)
+@@ -310,7 +311,8 @@ ramips_setup_macs()
+ 		wwan_mac=$(macaddr_add $label_mac 1)
+ 		ucidef_set_interface "wwan0" device "/dev/cdc-wdm0" protocol "qmi" macaddr "$wwan_mac"
+ 		;;
+-	ruijie,rg-ew1200g-pro-v1.1)
++	ruijie,rg-ew1200g-pro-v1.1|\
++	ruijie,rg-ew1300g-v1)
+ 		lan_mac=$(mtd_get_mac_ascii product_info ethaddr)
+ 		wan_mac=$(macaddr_add "$lan_mac" 8)
+ 		label_mac=$lan_mac
+diff --git a/target/linux/ramips/mt7621/base-files/etc/hotplug.d/ieee80211/10_fix_wifi_mac b/target/linux/ramips/mt7621/base-files/etc/hotplug.d/ieee80211/10_fix_wifi_mac
+index 9f93d68acca..138196855cf 100644
+--- a/target/linux/ramips/mt7621/base-files/etc/hotplug.d/ieee80211/10_fix_wifi_mac
++++ b/target/linux/ramips/mt7621/base-files/etc/hotplug.d/ieee80211/10_fix_wifi_mac
+@@ -165,7 +165,8 @@ case "$board" in
+ 		[ "$PHYNBR" = "0" ] && \
+ 			macaddr_setbit_la "$(get_mac_label)" > /sys${DEVPATH}/macaddress
+ 		;;
+-	ruijie,rg-ew1200g-pro-v1.1)
++	ruijie,rg-ew1200g-pro-v1.1|\
++	ruijie,rg-ew1300g-v1)
+ 		hw_mac_addr="$(mtd_get_mac_ascii product_info ethaddr)"
+ 		[ "$PHYNBR" = "0" ] && macaddr_add $hw_mac_addr 1 > /sys${DEVPATH}/macaddress
+ 		[ "$PHYNBR" = "1" ] && macaddr_add $hw_mac_addr 2 > /sys${DEVPATH}/macaddress

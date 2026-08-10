@@ -1,0 +1,648 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Mikhail Zhilkin <csharper2005@gmail.com>
+Date: Mon, 9 Feb 2026 22:27:10 +0300
+Subject: [PATCH 14/76] qualcommax: ipq50xx: add support for CMCC MR3000D-CI
+
+CMCC MR3000D-CI is a 2.4/5 GHz band 11ax (Wi-Fi 6) router, based on
+IPQ5000.
+
+Device specification
+--------------------
+- SoC			: Qualcomm IPQ5018
+- RAM			: 512 MiB DDR3L
+- Flash			: 128 MiB SPI-NAND (GigaDevice GD5F1GQ5REYIG)
+- WLAN			: 2.4/5 GHz 2T2R
+- 	2.4 GHz		: Qualcomm IPQ5018 (SoC)
+- 	5 GHz		: Qualcomm Atheros QCN6102
+- Ethernet		: 4x 10/100/1000 Mbps
+- 	Switch		: Qualcomm Atheros QCA8337
+- LEDs/Keys (GPIO)	: 2x LEDs, 2x Buttons
+- UART			: Through-hole on PCB
+- 	Voltage		: 3.3 V
+- 	Assignment	: Silkscreened on PCB
+- 	Settings	: 115200n8
+- Power			: 12 VDC, 1.5 A
+
+Installation
+-----------------
+1. Telnet method
+    a. Enable telnet
+    Log in to http://192.168.10.1/ with the password on the sticker
+    Modify URL according to example (keep your unique hash after ";stok=")
+    and press Enter:
+    http://192.168.10.1/cgi-bin/luci/;stok=78becad1b1490e45be2776025cde2b7d/api/NPCnetwork/ping?url=$(telnetd)
+    You should get the following in the browser:
+    {"link":0}
+
+    b. Run tftp server on IP 192.168.10.254 and put factory image
+    'openwrt-qualcommax-ipq50xx-cmcc_mr3000d-ci-squashfs-factory.ubi'
+    in the tftp root dir.
+
+    c. Login to 192.168.10.1 with telnet (user: root, pass: from the
+    sticker).
+
+    d. Download factory image from the tftp:
+    tftp -l factory.ubi -r openwrt-qualcommax-ipq50xx-cmcc_mr3000d-ci-squashfs-factory.ubi -g 192.168.10.254
+
+    e. Flash factory image:
+    export rootfs=$(cat /proc/mtd | grep rootfs | grep -v _ | cut -d: -f1)
+    ubidetach -f -p /dev/${rootfs}
+    ubiformat /dev/${rootfs} -y -f /tmp/factory.ubi
+
+    f. Reboot:
+    reboot
+
+2. U-Boot Method using UBI Image (using UART)
+    a. Place the factory.ubi file on your TFTP server, enter U-Boot CLI
+    and exec these commands:
+    tftpboot <your_tftp_server_ip>:factory.ubi
+    flash rootfs
+    reset
+
+3. U-Boot Method using initramfs Image (using UART)
+    a. Place the openwrt-*-initramfs-fit-uImage.itb file on your TFTP
+    server and rename it to initramfs.bin
+
+    b. Enable serial console, enter to U-Boot CLI and exec these commands:
+    tftpboot <your_tftp_server_ip>:initramfs.bin
+    bootm
+
+    c. Once boot completed, upload the sysupgrade.bin file to router's
+    /tmp directory (using scp or wget) and execute the following command
+    in openwrt shell:
+    sysupgrade -n /tmp/sysupgrade.bin
+
+MAC Addresses
+-------------
++--------------+-------------------+-------------+
+| Interface    | MAC example       | Location    |
++--------------+-------------------+-------------+
+| LAN          | 84:7a:xx:xx:xx:dd | 0:ART, 0x6  |
+| WAN (label)  | 84:7a:xx:xx:xx:dc | 0:ART, 0x0  |
+| WLAN 2.4 GHz | 84:7a:xx:xx:xx:de | 0:ART, 0xc  |
+| WLAN 5       | 84:7a:xx:xx:xx:df | 0:ART, 0x12 |
++--------------+-------------------+-------------+
+
+Notes
+-----
+1. U-Boot is protected by a password (pass: netpower).
+
+Signed-off-by: Mikhail Zhilkin <csharper2005@gmail.com>
+Link: https://github.com/openwrt/openwrt/pull/21952
+Signed-off-by: Robert Marko <robimarko@gmail.com>
+---
+ .../uboot-envtools/files/qualcommax_ipq50xx   |   1 +
+ package/firmware/ipq-wifi/Makefile            |   2 +
+ .../boot/dts/qcom/ipq5018-mr3000d-ci.dts      | 424 ++++++++++++++++++
+ target/linux/qualcommax/image/ipq50xx.mk      |  16 +
+ .../ipq50xx/base-files/etc/board.d/02_network |   1 +
+ .../etc/hotplug.d/firmware/11-ath11k-caldata  |  14 +
+ .../base-files/lib/upgrade/platform.sh        |   1 +
+ 7 files changed, 459 insertions(+)
+ create mode 100644 target/linux/qualcommax/files/arch/arm64/boot/dts/qcom/ipq5018-mr3000d-ci.dts
+
+diff --git a/package/boot/uboot-tools/uboot-envtools/files/qualcommax_ipq50xx b/package/boot/uboot-tools/uboot-envtools/files/qualcommax_ipq50xx
+index 6366859fc33..d825f885dd5 100644
+--- a/package/boot/uboot-tools/uboot-envtools/files/qualcommax_ipq50xx
++++ b/package/boot/uboot-tools/uboot-envtools/files/qualcommax_ipq50xx
+@@ -8,6 +8,7 @@ touch /etc/config/ubootenv
+ board=$(board_name)
+ 
+ case "$board" in
++cmcc,mr3000d-ci|\
+ cmcc,pz-l8|\
+ elecom,wrc-x3000gs2|\
+ iodata,wn-dax3000gr|\
+diff --git a/package/firmware/ipq-wifi/Makefile b/package/firmware/ipq-wifi/Makefile
+index 9e563d48886..328448d08c8 100644
+--- a/package/firmware/ipq-wifi/Makefile
++++ b/package/firmware/ipq-wifi/Makefile
+@@ -35,6 +35,7 @@ ALLWIFIBOARDS:= \
+ 	asus_rt-ax89x \
+ 	buffalo_wxr-5950ax12 \
+ 	cambiumnetworks_xe34 \
++	cmcc_mr3000d-ci \
+ 	cmcc_rm2-6 \
+ 	compex_wpq873 \
+ 	dynalink_dl-wrx36 \
+@@ -226,6 +227,7 @@ $(eval $(call generate-ipq-wifi-package,arcadyan_aw1000,Arcadyan AW1000))
+ $(eval $(call generate-ipq-wifi-package,asus_rt-ax89x,Asus RT-AX89X))
+ $(eval $(call generate-ipq-wifi-package,buffalo_wxr-5950ax12,Buffalo WXR-5950AX12))
+ $(eval $(call generate-ipq-wifi-package,cambiumnetworks_xe34,Cambium Networks XE3-4))
++$(eval $(call generate-ipq-wifi-package,cmcc_mr3000d-ci,CMCC MR3000D-CI))
+ $(eval $(call generate-ipq-wifi-package,cmcc_rm2-6,CMCC RM2-6))
+ $(eval $(call generate-ipq-wifi-package,compex_wpq873,Compex WPQ-873))
+ $(eval $(call generate-ipq-wifi-package,dynalink_dl-wrx36,Dynalink DL-WRX36))
+diff --git a/target/linux/qualcommax/files/arch/arm64/boot/dts/qcom/ipq5018-mr3000d-ci.dts b/target/linux/qualcommax/files/arch/arm64/boot/dts/qcom/ipq5018-mr3000d-ci.dts
+new file mode 100644
+index 00000000000..a03f9de657c
+--- /dev/null
++++ b/target/linux/qualcommax/files/arch/arm64/boot/dts/qcom/ipq5018-mr3000d-ci.dts
+@@ -0,0 +1,424 @@
++// SPDX-License-Identifier: GPL-2.0-or-later OR MIT
++
++/dts-v1/;
++
++#include "ipq5018.dtsi"
++#include "ipq5018-ess.dtsi"
++#include "ipq5018-qcn6122.dtsi"
++
++#include <dt-bindings/gpio/gpio.h>
++#include <dt-bindings/input/input.h>
++#include <dt-bindings/leds/common.h>
++
++/ {
++	model = "CMCC MR3000D-CI";
++	compatible = "cmcc,mr3000d-ci", "qcom,ipq5018";
++
++	aliases {
++		label-mac-device = <&dp1>;
++
++		led-boot = &led_status_red;
++		led-failsafe = &led_status_green;
++		led-running = &led_status_green;
++		led-upgrade = &led_status_green;
++
++		serial0 = &blsp1_uart1;
++	};
++
++	chosen {
++		bootargs-append = " root=/dev/ubiblock0_1 swiotlb=1 coherent_pool=2M";
++		stdout-path = "serial0:115200n8";
++	};
++
++	keys {
++		compatible = "gpio-keys";
++		pinctrl-0 = <&button_pins>;
++		pinctrl-names = "default";
++
++		button-0 {
++			label = "reset";
++			gpios = <&tlmm 27 GPIO_ACTIVE_LOW>;
++			linux,code = <KEY_RESTART>;
++		};
++
++		button-1 {
++			label = "wps";
++			gpios = <&tlmm 38 GPIO_ACTIVE_LOW>;
++			linux,code = <KEY_WPS_BUTTON>;
++		};
++	};
++
++	leds {
++		compatible = "gpio-leds";
++		pinctrl-0 = <&led_pins>;
++		pinctrl-names = "default";
++
++		led_status_red: led-0 {
++			gpios = <&tlmm 30 GPIO_ACTIVE_HIGH>;
++			color = <LED_COLOR_ID_RED>;
++			function = LED_FUNCTION_STATUS;
++		};
++
++		led_status_green: led-1 {
++			gpios = <&tlmm 46 GPIO_ACTIVE_HIGH>;
++			color = <LED_COLOR_ID_GREEN>;
++			function = LED_FUNCTION_STATUS;
++		};
++	};
++};
++
++&sleep_clk {
++	clock-frequency = <32000>;
++};
++
++&xo_board_clk {
++	clock-div = <4>;
++	clock-mult = <1>;
++};
++
++&blsp1_uart1 {
++	status = "okay";
++
++	pinctrl-0 = <&serial_0_pins>;
++	pinctrl-names = "default";
++};
++
++&crypto {
++	status = "okay";
++};
++
++&cryptobam {
++	status = "okay";
++};
++
++&prng {
++	status = "okay";
++};
++
++&qfprom {
++	status = "okay";
++};
++
++&qpic_bam {
++	status = "okay";
++};
++
++&qpic_nand {
++	pinctrl-0 = <&qpic_pins>;
++	pinctrl-names = "default";
++	status = "okay";
++
++	// GigaDevice GD5F1GQ5REYIG
++	nand@0 {
++		compatible = "spi-nand";
++		reg = <0>;
++
++		nand-ecc-engine = <&qpic_nand>;
++		nand-ecc-step-size = <512>;
++		nand-ecc-strength = <8>;
++		nand-bus-width = <8>;
++
++		partitions {
++			compatible = "qcom,smem-part";
++
++			partition-art {
++				label = "0:art";
++				read-only;
++
++				nvmem-layout {
++					compatible = "fixed-layout";
++					#address-cells = <1>;
++					#size-cells = <1>;
++
++					// WAN MAC address
++					macaddr_art_0: mac-address@0 {
++						compatible = "mac-base";
++						reg = <0x0 0x6>;
++						#nvmem-cell-cells = <1>;
++					};
++
++					// LAN MAC address
++					macaddr_art_6: mac-address@6 {
++						compatible = "mac-base";
++						reg = <0x6 0x6>;
++						#nvmem-cell-cells = <1>;
++					};
++
++					// WLAN 2.4 GHz MAC address
++					macaddr_art_c: mac-address@c {
++						compatible = "mac-base";
++						reg = <0xc 0x6>;
++						#nvmem-cell-cells = <1>;
++					};
++
++					// WLAN 5 GHz MAC address
++					macaddr_art_12: mac-address@12 {
++						compatible = "mac-base";
++						reg = <0x12 0x6>;
++						#nvmem-cell-cells = <1>;
++					};
++				};
++			};
++		};
++	};
++};
++
++/*
++ * ===============================================================
++ *     _______________________         _______________________
++ *    |        IPQ5018        |       |        QCA8337        |
++ *    | +------+   +--------+ |       | +--------+   +------+ |
++ *    | | MAC0 |---| GE Phy | |       | |  Phy0  |---| MAC1 | |
++ *    | +------+   +--------+ |       | +--------+   +------+ |
++ *    | +------+   +--------+ |       | +--------+   +------+ |
++ *    | | MAC1 |---| Uniphy |-+-SGMII-+-| SerDes |---| MAC6 | |
++ *    | +------+   +--------+ |       | +--------+   +------+ |
++ *    |_______________________|       |_______________________|
++ *
++ * ===============================================================
++ */
++
++&switch {
++	status = "okay";
++
++	switch_mac_mode = <MAC_MODE_SGMII_CHANNEL0>;
++
++	qcom,port_phyinfo {
++		// MAC0 -> GE Phy -> QCA8337 Phy4
++		port@1 {
++			port_id = <1>;
++			mdiobus = <&mdio0>;
++			phy_address = <7>;
++		};
++
++		// MAC1 ---SGMII---> QCA8337 SerDes
++		port@2 {
++			port_id = <2>;
++			mdiobus = <&mdio1>;
++			forced-speed = <1000>;
++			forced-duplex = <1>;
++		};
++	};
++};
++
++// MAC0 -> GE Phy
++&dp1 {
++	status = "okay";
++
++	nvmem-cell-names = "mac-address";
++	nvmem-cells = <&macaddr_art_0 (0)>;
++};
++
++// MAC1 -> SGMII
++&dp2 {
++	status = "okay";
++
++	nvmem-cell-names = "mac-address";
++	nvmem-cells = <&macaddr_art_6 (0)>;
++
++	fixed-link {
++		speed = <1000>;
++		full-duplex;
++	};
++};
++
++&mdio0 {
++	status = "okay";
++};
++
++// MAC0 -> GE Phy -> QCA8337 Phy4
++&ge_phy {
++	qcom,dac-preset-short-cable;
++};
++
++&mdio1 {
++	status = "okay";
++
++	pinctrl-0 = <&mdio1_pins>;
++	pinctrl-names = "default";
++	reset-gpios = <&tlmm 39 GPIO_ACTIVE_LOW>;
++
++	// QCA8337 Phy0 -> LAN3
++	qca8337_0: ethernet-phy@0 {
++		reg = <0>;
++	};
++
++	// QCA8337 Phy1 -> LAN2
++	qca8337_1: ethernet-phy@1 {
++		reg = <1>;
++	};
++
++	// QCA8337 Phy2 -> LAN1
++	qca8337_2: ethernet-phy@2 {
++		reg = <2>;
++	};
++
++	// QCA8337 Phy3 -> WAN
++ 	qca8337_3: ethernet-phy@3 {
++		reg = <3>;
++	};
++
++	// QCA8337 Phy4 -> IPQ5018 GE Phy
++	qca8337_4: ethernet-phy@4 {
++		reg = <4>;
++	};
++
++	// QCA8337 switch
++	switch1: ethernet-switch@17 {
++		compatible = "qca,qca8337";
++		reg = <17>;
++		#address-cells = <1>;
++		#size-cells = <0>;
++
++		ports {
++			#address-cells = <1>;
++			#size-cells = <0>;
++
++			port@1 {
++				reg = <1>;
++				label = "lan3";
++				phy-handle = <&qca8337_0>;
++			};
++
++			port@2 {
++				reg = <2>;
++				label = "lan2";
++				phy-handle = <&qca8337_1>;
++			};
++
++			port@3 {
++				reg = <3>;
++				label = "lan1";
++				phy-handle = <&qca8337_2>;
++			};
++
++			port@4 {
++				reg = <4>;
++				label = "wan";
++				phy-handle = <&qca8337_3>;
++
++				nvmem-cells = <&macaddr_art_0 (0)>;
++				nvmem-cell-names = "mac-address";
++			};
++
++			port@6 {
++				reg = <6>;
++				phy-mode = "sgmii";
++				ethernet = <&dp2>;
++				qca,sgmii-enable-pll;
++
++				fixed-link {
++					speed = <1000>;
++					full-duplex;
++				};
++			};
++		};
++	};
++};
++
++&tlmm {
++	button_pins: button-state {
++		button-pins {
++			pins = "gpio27", "gpio38";
++			function = "gpio";
++			drive-strength = <8>;
++			bias-pull-up;
++		};
++
++	};
++
++	led_pins: led-state {
++		pins = "gpio30", "gpio46";
++		function = "gpio";
++		drive-strength = <8>;
++		bias-pull-down;
++	};
++
++	mdio1_pins: mdio-state {
++		mdc-pins {
++			pins = "gpio36";
++			function = "mdc";
++			drive-strength = <8>;
++			bias-pull-up;
++		};
++
++		mdio-pins {
++			pins = "gpio37";
++			function = "mdio";
++			drive-strength = <8>;
++			bias-pull-up;
++		};
++	};
++
++	qpic_pins: qpic-state {
++		clock-pins {
++			pins = "gpio9";
++			function = "qspi_clk";
++			drive-strength = <8>;
++			bias-disable;
++		};
++
++		cs-pins {
++			pins = "gpio8";
++			function = "qspi_cs";
++			drive-strength = <8>;
++			bias-disable;
++		};
++
++		data-pins {
++			pins = "gpio4", "gpio5", "gpio6", "gpio7";
++			function = "qspi_data";
++			drive-strength = <8>;
++			bias-disable;
++		};
++	};
++
++	serial_0_pins: uart0-state {
++		pins = "gpio28", "gpio29";
++		function = "blsp0_uart1";
++		drive-strength = <8>;
++		bias-disable;
++	};
++
++	switch_reset_pins: switch-reset-state {
++		pins = "gpio39";
++		function = "gpio";
++		drive-strength = <8>;
++		bias-pull-down;
++	};
++};
++
++&q6v5_wcss {
++	status = "okay";
++
++	/* The QCN6102 radio should map to UPD ID 2. Without       */
++	/* bootargs, the firmware will expect it to be on UPD ID 3 */
++	boot-args = <
++		/*       type:	*/	0x1	/* PCIE0	*/
++		/*     length:	*/	4
++		/*     UPD ID:	*/	2
++		/* reset GPIO:	*/	15
++		/*   reserved:	*/	0 0>;
++};
++
++&wifi {
++	// IPQ5018
++	status = "okay";
++
++	qcom,rproc = <&q6_wcss_pd1>;
++	qcom,ath11k-calibration-variant = "CMCC-MR3000D-CI";
++	qcom,ath11k-fw-memory-mode = <1>;
++	qcom,bdf-addr = <0x4c400000>;
++};
++
++&wifi1 {
++	// QCN6102 5G
++	status = "okay";
++
++	qcom,rproc = <&q6_wcss_pd2>;
++	qcom,userpd-subsys-name = "q6v5_wcss_userpd2";
++	qcom,ath11k-calibration-variant = "CMCC-MR3000D-CI";
++	qcom,ath11k-fw-memory-mode = <1>;
++	qcom,bdf-addr = <0x4d100000>;
++	qcom,m3-dump-addr = <0x4df00000>;
++};
+diff --git a/target/linux/qualcommax/image/ipq50xx.mk b/target/linux/qualcommax/image/ipq50xx.mk
+index 7fab5227839..60348ccea65 100644
+--- a/target/linux/qualcommax/image/ipq50xx.mk
++++ b/target/linux/qualcommax/image/ipq50xx.mk
+@@ -18,6 +18,22 @@ define Build/mstc-header
+ 	rm -f $@.crclen
+ endef
+ 
++define Device/cmcc_mr3000d-ci
++	$(call Device/FitImageLzma)
++	$(call Device/UbiFit)
++	DEVICE_VENDOR := CMCC
++	DEVICE_MODEL := MR3000D-CI
++	DEVICE_DTS_CONFIG := config@mp03.3-m1
++	SOC := ipq5018
++	BLOCKSIZE := 128k
++	PAGESIZE := 2048
++	IMAGE_SIZE := 59392k
++	NAND_SIZE := 128m
++	DEVICE_PACKAGES := ath11k-firmware-ipq5018-qcn6122 \
++		ipq-wifi-cmcc_mr3000d-ci
++endef
++TARGET_DEVICES += cmcc_mr3000d-ci
++
+ define Device/cmcc_pz-l8
+ 	$(call Device/FitImageLzma)
+ 	$(call Device/UbiFit)
+diff --git a/target/linux/qualcommax/ipq50xx/base-files/etc/board.d/02_network b/target/linux/qualcommax/ipq50xx/base-files/etc/board.d/02_network
+index 09a68d7c1e9..16aa187ec80 100644
+--- a/target/linux/qualcommax/ipq50xx/base-files/etc/board.d/02_network
++++ b/target/linux/qualcommax/ipq50xx/base-files/etc/board.d/02_network
+@@ -16,6 +16,7 @@ ipq50xx_setup_interfaces()
+ 	glinet,gl-b3000)
+ 		ucidef_set_interfaces_lan_wan "lan1 lan2" "wan"
+ 		;;
++	cmcc,mr3000d-ci|\
+ 	cmcc,pz-l8|\
+ 	linksys,mx2000|\
+ 	linksys,mx5500|\
+diff --git a/target/linux/qualcommax/ipq50xx/base-files/etc/hotplug.d/firmware/11-ath11k-caldata b/target/linux/qualcommax/ipq50xx/base-files/etc/hotplug.d/firmware/11-ath11k-caldata
+index d4a913b9cc6..92fd10a04fb 100644
+--- a/target/linux/qualcommax/ipq50xx/base-files/etc/hotplug.d/firmware/11-ath11k-caldata
++++ b/target/linux/qualcommax/ipq50xx/base-files/etc/hotplug.d/firmware/11-ath11k-caldata
+@@ -9,6 +9,13 @@ board=$(board_name)
+ case "$FIRMWARE" in
+ "ath11k/IPQ5018/hw1.0/cal-ahb-c000000.wifi.bin")
+ 	case "$board" in
++	cmcc,mr3000d-ci)
++		caldata_extract "0:art" 0x1000 0x20000
++		wlan_mac=$(mtd_get_mac_binary 0:art 12)
++		ath11k_patch_mac $wlan_mac 0
++		ath11k_set_macflag
++		ath11k_remove_regdomain
++		;;
+ 	elecom,wrc-x3000gs2|\
+ 	iodata,wn-dax3000gr|\
+ 	zyxel,scr50axe)
+@@ -54,6 +61,13 @@ case "$FIRMWARE" in
+ 	;;
+ "ath11k/QCN6122/hw1.0/cal-ahb-b00a040.wifi.bin")
+ 	case "$board" in
++	cmcc,mr3000d-ci)
++		caldata_extract "0:art" 0x26800 0x20000
++		wlan_mac=$(mtd_get_mac_binary 0:art 18)
++		ath11k_patch_mac $wlan_mac 0
++		ath11k_remove_regdomain
++		ath11k_set_macflag
++		;;
+ 	elecom,wrc-x3000gs2|\
+ 	iodata,wn-dax3000gr|\
+ 	zyxel,scr50axe)
+diff --git a/target/linux/qualcommax/ipq50xx/base-files/lib/upgrade/platform.sh b/target/linux/qualcommax/ipq50xx/base-files/lib/upgrade/platform.sh
+index c6e8d0fb0dc..9be1d8211cd 100644
+--- a/target/linux/qualcommax/ipq50xx/base-files/lib/upgrade/platform.sh
++++ b/target/linux/qualcommax/ipq50xx/base-files/lib/upgrade/platform.sh
+@@ -179,6 +179,7 @@ platform_pre_upgrade() {
+ 
+ platform_do_upgrade() {
+ 	case "$(board_name)" in
++	cmcc,mr3000d-ci|\
+ 	cmcc,pz-l8|\
+ 	elecom,wrc-x3000gs2|\
+ 	iodata,wn-dax3000gr)

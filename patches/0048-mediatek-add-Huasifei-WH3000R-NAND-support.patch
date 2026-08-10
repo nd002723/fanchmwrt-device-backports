@@ -1,0 +1,427 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Fil Dunsky <filipp.dunsky@gmail.com>
+Date: Wed, 29 Apr 2026 15:48:59 +0300
+Subject: [PATCH 48/76] mediatek: add Huasifei WH3000R NAND support
+
+**Huasifei WH3000R NAND**
+Wi-Fi 6 router based on MediaTek MT7981B SoC.
+MT7981B+MT7976CN+MT7531AE
+
+**Specifications**
+SoC: Filogic 820 MT7981B (1.3GHz)
+RAM: DDR3 512MB
+Flash: 256MiB Winbond SPI NAND
+WiFi: MT7976C: 2.4GHz 2x2, 5GHz 2x2
+Ethernet: MT7531: 3x 1GbE LAN + 1x 1GbE WAN
+USB: 1x USB 3.0 port
+Two buttons: reset and mesh
+LEDs: RGB (red, green, blue together)
+UART: 3.3V, TX, RX, GND / 115200 8N1
+DC power interface
+
++---------+-------------------+--------------------------+
+|         | MAC               | Algorithm                |
++---------+-------------------+--------------------------+
+| LAN     | 58:23:BC:xx:xx:x2 | label+1                  |
+| WAN     | 58:23:BC:xx:xx:x1 | label+0 (eeprom)         |
+| WLAN 2g | 58:23:BC:xx:xx:x3 | label+2                  |
+| WLAN 5g | 58:23:BC:xx:xx:x4 | label+3                  |
++---------+-------------------+--------------------------+
+Since it's convenient for the users to check and tell MAC
+to their internet providers from the router label, we set
+WAN as a base MAC located at 'Factory', 0x4.
+Discussed this with the vendor.
+
+**Installation via U-Boot rescue**
+1. Set static IP 192.168.1.2 on your computer and default route as 192.168.1.1
+2. Connect to the LAN port and hold the reset button while booting the device.
+3. Wait for the LED to blink 5 times, and release the reset button.
+4. Open U-boot web page on your browser at http://192.168.1.1
+5. Select the OpenWrt sysupgrade image, upload it, and start the upgrade.
+6. Wait for the router to flash the new firmware.
+7. Wait for the router to reboot itself.
+
+**Installation via sysupgrade**
+Just flash sysupgrade file via
+[LuCI upgrade page](http://192.168.1.1/cgi-bin/luci/admin/system/flash)
+without saving the settings.
+
+**Installation via SSH**
+Upload the file to the router `/tmp` directory, `ssh root@192.168.1.1`
+and issue a command:
+```
+sysupgrade -n /tmp/openwrt-mediatek-filogic-huasifei_wh3000r-nand-squashfs-sysupgrade.bin
+```
+
+Signed-off-by: Fil Dunsky <filipp.dunsky@gmail.com>
+Link: https://github.com/openwrt/openwrt/pull/23156
+Signed-off-by: Hauke Mehrtens <hauke@hauke-m.de>
+---
+ .../dts/mt7981b-huasifei-wh3000r-nand.dts     | 292 ++++++++++++++++++
+ .../filogic/base-files/etc/board.d/01_leds    |   3 +
+ .../filogic/base-files/etc/board.d/02_network |   1 +
+ .../base-files/lib/upgrade/platform.sh        |   1 +
+ target/linux/mediatek/image/filogic.mk        |  13 +
+ 5 files changed, 310 insertions(+)
+ create mode 100644 target/linux/mediatek/dts/mt7981b-huasifei-wh3000r-nand.dts
+
+diff --git a/target/linux/mediatek/dts/mt7981b-huasifei-wh3000r-nand.dts b/target/linux/mediatek/dts/mt7981b-huasifei-wh3000r-nand.dts
+new file mode 100644
+index 00000000000..f999ab516fb
+--- /dev/null
++++ b/target/linux/mediatek/dts/mt7981b-huasifei-wh3000r-nand.dts
+@@ -0,0 +1,292 @@
++// SPDX-License-Identifier: GPL-2.0-or-later OR MIT
++
++/dts-v1/;
++#include <dt-bindings/gpio/gpio.h>
++#include <dt-bindings/input/input.h>
++#include <dt-bindings/leds/common.h>
++
++#include "mt7981b.dtsi"
++
++/ {
++	model = "Huasifei WH3000R NAND";
++	compatible = "huasifei,wh3000r-nand", "mediatek,mt7981";
++
++	aliases {
++		label-mac-device = &gmac1;
++
++		led-boot = &led_power;
++		led-failsafe = &led_power;
++		led-running = &led_status;
++		led-upgrade = &led_power;
++
++		serial0 = &uart0;
++	};
++
++	chosen {
++		stdout-path = "serial0:115200n8";
++	};
++
++	memory {
++		reg = <0 0x40000000 0 0x20000000>;
++		device_type = "memory";
++	};
++
++	gpio-keys {
++		compatible = "gpio-keys";
++
++		button-mesh {
++			label = "mesh";
++			linux,code = <KEY_RFKILL>;
++			gpios = <&pio 0 GPIO_ACTIVE_LOW>;
++			debounce-interval = <60>;
++		};
++
++		button-reset {
++			label = "reset";
++			linux,code = <KEY_RESTART>;
++			gpios = <&pio 1 GPIO_ACTIVE_LOW>;
++			debounce-interval = <60>;
++		};
++	};
++
++	gpio-leds {
++		compatible = "gpio-leds";
++
++		led_power: led_power {
++			function = LED_FUNCTION_POWER;
++			color = <LED_COLOR_ID_RED>;
++			gpios = <&pio 9 GPIO_ACTIVE_LOW>;
++		};
++
++		led_status: led_status {
++			function = LED_FUNCTION_STATUS;
++			color = <LED_COLOR_ID_GREEN>;
++			gpios = <&pio 10 GPIO_ACTIVE_LOW>;
++		};
++
++		led_internet {
++			function = LED_FUNCTION_WAN_ONLINE;
++			color = <LED_COLOR_ID_BLUE>;
++			gpios = <&pio 11 GPIO_ACTIVE_LOW>;
++		};
++	};
++};
++
++&eth {
++	status = "okay";
++
++	gmac0: mac@0 {
++		compatible = "mediatek,eth-mac";
++		reg = <0>;
++		phy-mode = "2500base-x";
++		nvmem-cells = <&macaddr_factory_4 1>;
++		nvmem-cell-names = "mac-address";
++
++		fixed-link {
++			speed = <2500>;
++			full-duplex;
++			pause;
++		};
++	};
++
++	gmac1: mac@1 {
++		compatible = "mediatek,eth-mac";
++		reg = <1>;
++		phy-mode = "gmii";
++		nvmem-cells = <&macaddr_factory_4 0>;
++		nvmem-cell-names = "mac-address";
++		phy-handle = <&phy0>;
++		label = "wan";
++	};
++
++	mdio: mdio-bus {
++		#address-cells = <1>;
++		#size-cells = <0>;
++
++		phy0: ethernet-phy@0 {
++			compatible = "ethernet-phy-id03a2.9461";
++			reg = <0>;
++			phy-mode = "gmii";
++			nvmem-cells = <&phy_calibration>;
++			nvmem-cell-names = "phy-cal-data";
++		};
++
++		switch: switch@1f {
++			compatible = "mediatek,mt7531";
++			reg = <0x1f>;
++			reset-gpios = <&pio 39 GPIO_ACTIVE_HIGH>;
++			interrupt-controller;
++			#interrupt-cells = <1>;
++			interrupt-parent = <&pio>;
++			interrupts = <38 IRQ_TYPE_LEVEL_HIGH>;
++		};
++	};
++};
++
++&spi0 {
++	pinctrl-names = "default";
++	pinctrl-0 = <&spi0_flash_pins>;
++	status = "okay";
++
++	spi_nand@0 {
++		compatible = "spi-nand";
++		reg = <0>;
++
++		spi-max-frequency = <52000000>;
++		spi-tx-bus-width = <4>;
++		spi-rx-bus-width = <4>;
++
++		spi-cal-enable;
++		spi-cal-mode = "read-data";
++		spi-cal-datalen = <7>;
++		spi-cal-data = /bits/ 8 <0x53 0x50 0x49 0x4e 0x41 0x4e 0x44>;
++		spi-cal-addrlen = <5>;
++		spi-cal-addr = /bits/ 32 <0x0 0x0 0x0 0x0 0x0>;
++
++		mediatek,nmbm;
++		mediatek,bmt-max-ratio = <1>;
++		mediatek,bmt-max-reserved-blocks = <64>;
++
++		partitions {
++			compatible = "fixed-partitions";
++			#address-cells = <1>;
++			#size-cells = <1>;
++
++			partition@0 {
++				label = "BL2";
++				reg = <0x0 0x100000>;
++				read-only;
++			};
++
++			partition@100000 {
++				label = "u-boot-env";
++				reg = <0x100000 0x80000>;
++				read-only;
++			};
++
++			partition@180000 {
++				label = "Factory";
++				reg = <0x180000 0x200000>;
++				read-only;
++
++				nvmem-layout {
++					compatible = "fixed-layout";
++					#address-cells = <1>;
++					#size-cells = <1>;
++
++					eeprom_factory_0: eeprom@0 {
++						reg = <0x0 0x1000>;
++					};
++
++					macaddr_factory_4: macaddr@4 {
++						compatible = "mac-base";
++						reg = <0x4 0x6>;
++						#nvmem-cell-cells = <1>;
++					};
++				};
++			};
++
++			partition@380000 {
++				label = "FIP";
++				reg = <0x380000 0x200000>;
++				read-only;
++			};
++
++			partition@580000 {
++				label = "ubi";
++				reg = <0x580000 0xe280000>;
++			};
++		};
++	};
++};
++
++&pio {
++	spi0_flash_pins: spi0-pins {
++		mux {
++			function = "spi";
++			groups = "spi0", "spi0_wp_hold";
++		};
++
++		conf-pu {
++			pins = "SPI0_CS", "SPI0_HOLD", "SPI0_WP";
++			drive-strength = <MTK_DRIVE_8mA>;
++			bias-pull-up = <MTK_PUPD_SET_R1R0_11>;
++		};
++
++		conf-pd {
++			pins = "SPI0_CLK", "SPI0_MOSI", "SPI0_MISO";
++			drive-strength = <MTK_DRIVE_8mA>;
++			bias-pull-down = <MTK_PUPD_SET_R1R0_11>;
++		};
++	};
++};
++
++&switch {
++	ports {
++		#address-cells = <1>;
++		#size-cells = <0>;
++
++		port@0 {
++			reg = <0>;
++			label = "lan1";
++		};
++
++		port@1 {
++			reg = <1>;
++			label = "lan2";
++		};
++
++		port@2 {
++			reg = <2>;
++			label = "lan3";
++		};
++
++		port@6 {
++			reg = <6>;
++			ethernet = <&gmac0>;
++			phy-mode = "2500base-x";
++
++			fixed-link {
++				speed = <2500>;
++				full-duplex;
++				pause;
++			};
++		};
++	};
++};
++
++&usb_phy {
++	status = "okay";
++};
++
++&uart0 {
++	status = "okay";
++};
++
++&watchdog {
++	status = "okay";
++};
++
++&wifi {
++	status = "okay";
++	#address-cells = <1>;
++	#size-cells = <0>;
++	nvmem-cells = <&eeprom_factory_0>;
++	nvmem-cell-names = "eeprom";
++
++	band@0 {
++		reg = <0>;
++		nvmem-cells = <&macaddr_factory_4 2>;
++		nvmem-cell-names = "mac-address";
++	};
++
++	band@1 {
++		reg = <1>;
++		nvmem-cells = <&macaddr_factory_4 3>;
++		nvmem-cell-names = "mac-address";
++	};
++};
++
++&xhci {
++	status = "okay";
++};
+diff --git a/target/linux/mediatek/filogic/base-files/etc/board.d/01_leds b/target/linux/mediatek/filogic/base-files/etc/board.d/01_leds
+index f0d5dbedd50..1b90a5e2d92 100644
+--- a/target/linux/mediatek/filogic/base-files/etc/board.d/01_leds
++++ b/target/linux/mediatek/filogic/base-files/etc/board.d/01_leds
+@@ -126,6 +126,9 @@ glinet,gl-xe3000)
+ huasifei,wh3000)
+ 	ucidef_set_led_netdev "wan" "WAN" "red:wan" "eth1" "link tx rx"
+ 	;;
++huasifei,wh3000r-nand)
++	ucidef_set_led_netdev "wan" "WAN" "blue:wan-online" "wan" "link"
++	;;
+ iptime,ax3000q)
+ 	ucidef_set_led_netdev "wan" "WAN" "amber:wan" "wan" "link tx rx"
+ 	;;
+diff --git a/target/linux/mediatek/filogic/base-files/etc/board.d/02_network b/target/linux/mediatek/filogic/base-files/etc/board.d/02_network
+index 78f93e6a220..56bc724cbc4 100644
+--- a/target/linux/mediatek/filogic/base-files/etc/board.d/02_network
++++ b/target/linux/mediatek/filogic/base-files/etc/board.d/02_network
+@@ -55,6 +55,7 @@ mediatek_setup_interfaces()
+ 	creatlentem,clt-r30b1-112m|\
+ 	cudy,wr3000-v1|\
+ 	globitel,bt-r320|\
++	huasifei,wh3000r-nand|\
+ 	jcg,q30-pro|\
+ 	jcg,q30-pro-stock|\
+ 	keenetic,kn-3711|\
+diff --git a/target/linux/mediatek/filogic/base-files/lib/upgrade/platform.sh b/target/linux/mediatek/filogic/base-files/lib/upgrade/platform.sh
+index ae781d73e0c..59e020f7dff 100644
+--- a/target/linux/mediatek/filogic/base-files/lib/upgrade/platform.sh
++++ b/target/linux/mediatek/filogic/base-files/lib/upgrade/platform.sh
+@@ -233,6 +233,7 @@ platform_do_upgrade() {
+ 	cudy,wr3000h-v1|\
+ 	cudy,wr3000p-v1|\
+ 	huasifei,wh3000-pro-nand|\
++	huasifei,wh3000r-nand|\
+ 	jiorouter,ax6000-jidu6101)
+ 		CI_UBIPART="ubi"
+ 		nand_do_upgrade "$1"
+diff --git a/target/linux/mediatek/image/filogic.mk b/target/linux/mediatek/image/filogic.mk
+index 0096093f996..fec73f29e18 100644
+--- a/target/linux/mediatek/image/filogic.mk
++++ b/target/linux/mediatek/image/filogic.mk
+@@ -1886,6 +1886,19 @@ define Device/huasifei_wh3000-pro-nand
+ endef
+ TARGET_DEVICES += huasifei_wh3000-pro-nand
+ 
++define Device/huasifei_wh3000r-nand
++  DEVICE_VENDOR := Huasifei
++  DEVICE_MODEL := WH3000R
++  DEVICE_VARIANT := NAND
++  DEVICE_DTS := mt7981b-huasifei-wh3000r-nand
++  DEVICE_DTS_DIR := ../dts
++  IMAGE_SIZE := 231936k
++  IMAGE/sysupgrade.bin := sysupgrade-tar | append-metadata
++  DEVICE_PACKAGES := kmod-mt7915e kmod-mt7981-firmware mt7981-wo-firmware \
++	kmod-usb3
++endef
++TARGET_DEVICES += huasifei_wh3000r-nand
++
+ define Device/imou_hx21
+   DEVICE_VENDOR := Imou
+   DEVICE_MODEL := HX21
