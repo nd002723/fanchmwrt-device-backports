@@ -1,0 +1,173 @@
+name: Follow upstream releases
+
+on:
+  schedule:
+    # Every day at 03:30 UTC, an hour before the builder's own sync.
+    - cron: '30 3 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  issues: write
+
+concurrency:
+  group: follow-upstream
+  cancel-in-progress: false
+
+jobs:
+  follow:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout device backports
+        uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - name: Resolve the newest upstream release
+        id: upstream
+        env:
+          UPSTREAM_REPOSITORY: fanchmwrt/fanchmwrt
+        run: |
+          set -euo pipefail
+          tags="$(git ls-remote --tags --refs "https://github.com/${UPSTREAM_REPOSITORY}.git" \
+            | awk '{print $2}' | sed 's|^refs/tags/||' \
+            | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | sort -V || true)"
+          ref="$(printf '%s\n' "$tags" | tail -1)"
+          if [[ -z "$ref" ]]; then
+            echo "::error::No release tag found for ${UPSTREAM_REPOSITORY}"
+            exit 1
+          fi
+          commit="$(git ls-remote "https://github.com/${UPSTREAM_REPOSITORY}.git" "refs/tags/${ref}^{}" | cut -f1)"
+          if [[ -z "$commit" ]]; then
+            commit="$(git ls-remote "https://github.com/${UPSTREAM_REPOSITORY}.git" "refs/tags/${ref}" | cut -f1)"
+          fi
+          if [[ -z "$commit" ]]; then
+            echo "::error::Cannot resolve the commit behind ${ref}"
+            exit 1
+          fi
+          echo "ref=${ref}" >> "$GITHUB_OUTPUT"
+          echo "commit=${commit}" >> "$GITHUB_OUTPUT"
+          echo "Newest upstream release: ${ref} (${commit})"
+
+      - name: Check whether the branch already follows the release
+        id: state
+        env:
+          REF: ${{ steps.upstream.outputs.ref }}
+          COMMIT: ${{ steps.upstream.outputs.commit }}
+        run: |
+          set -euo pipefail
+          if ! git ls-remote --exit-code --heads origin "refs/heads/${REF}" >/dev/null 2>&1; then
+            echo "exists=0" >> "$GITHUB_OUTPUT"
+            echo "follows=0" >> "$GITHUB_OUTPUT"
+            echo "Branch ${REF} does not exist yet."
+            exit 0
+          fi
+          git fetch --quiet origin "refs/heads/${REF}:refs/remotes/origin/${REF}"
+          base="$(git show "origin/${REF}:manifest.json" \
+            | python3 -c 'import json,sys; print(json.load(sys.stdin)["fanchmwrt"]["base_commit"])')"
+          echo "exists=1" >> "$GITHUB_OUTPUT"
+          if [[ "$base" == "$COMMIT" ]]; then
+            echo "follows=1" >> "$GITHUB_OUTPUT"
+            echo "Branch ${REF} already targets ${COMMIT}."
+          else
+            echo "follows=0" >> "$GITHUB_OUTPUT"
+            echo "Branch ${REF} targets ${base}, expected ${COMMIT}."
+          fi
+
+      - name: Checkout upstream release
+        if: steps.state.outputs.follows != '1'
+        uses: actions/checkout@v5
+        with:
+          repository: fanchmwrt/fanchmwrt
+          ref: ${{ steps.upstream.outputs.ref }}
+          path: upstream
+          fetch-depth: 1
+
+      - name: Checkout the builder for its source customization
+        if: steps.state.outputs.follows != '1'
+        uses: actions/checkout@v5
+        with:
+          repository: ${{ vars.BUILDER_REPOSITORY || 'nd002723/fanchmwrt-builder' }}
+          path: builder
+          fetch-depth: 1
+
+      - name: Try the current patch set on the new release
+        id: trial
+        if: steps.state.outputs.follows != '1'
+        run: |
+          set -uo pipefail
+          if ! bash builder/scripts/prepare-source.sh upstream; then
+            echo "ok=0" >> "$GITHUB_OUTPUT"
+            echo "reason=prepare" >> "$GITHUB_OUTPUT"
+            echo "::warning::prepare-source.sh failed on ${{ steps.upstream.outputs.ref }}"
+            exit 0
+          fi
+          failed=""
+          for patch in patches/*.patch; do
+            if ! git -C upstream apply --whitespace=nowarn "${PWD}/${patch}" 2>/dev/null; then
+              failed="${failed} $(basename "$patch")"
+            fi
+          done
+          if [[ -n "$failed" ]]; then
+            printf '%s\n' "$failed" > "$RUNNER_TEMP/failed.txt"
+            echo "ok=0" >> "$GITHUB_OUTPUT"
+            echo "reason=patches" >> "$GITHUB_OUTPUT"
+            echo "::warning::Patches that do not apply on ${{ steps.upstream.outputs.ref }}:${failed}"
+          else
+            echo "ok=1" >> "$GITHUB_OUTPUT"
+            echo "All patches apply on ${{ steps.upstream.outputs.ref }}."
+          fi
+
+      - name: Publish the branch
+        if: steps.trial.outputs.ok == '1'
+        env:
+          REF: ${{ steps.upstream.outputs.ref }}
+          COMMIT: ${{ steps.upstream.outputs.commit }}
+        run: |
+          set -euo pipefail
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git checkout -B "$REF" origin/main
+          python3 -c "import json,sys,pathlib; p=pathlib.Path('manifest.json'); m=json.loads(p.read_text(encoding='utf-8')); m['fanchmwrt'].update(base_commit=sys.argv[2], ref=sys.argv[1]); p.write_text(json.dumps(m, indent=2, ensure_ascii=False)+chr(10), encoding='utf-8')" "$REF" "$COMMIT"
+          git add manifest.json
+          git commit -m "Follow ${REF}: ${COMMIT}"
+          git push --force-with-lease origin "refs/heads/${REF}"
+          {
+            echo "Published branch \`${REF}\` for ${COMMIT}."
+            echo
+            echo "The builder picks it up automatically: \`upstream_ref: ${REF}\` now resolves to this branch."
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Report a release the patch set cannot follow yet
+        if: steps.trial.outputs.ok == '0'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REF: ${{ steps.upstream.outputs.ref }}
+          COMMIT: ${{ steps.upstream.outputs.commit }}
+          REASON: ${{ steps.trial.outputs.reason }}
+          REPOSITORY: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          title="Device backports do not apply to ${REF}"
+          {
+            echo "Upstream \`${REF}\` (${COMMIT}) was published, but the patch set on \`main\` does not apply to it yet."
+            echo
+            if [[ "$REASON" == "patches" ]]; then
+              echo "Patches that failed:"
+              echo
+              echo '```'
+              cat "$RUNNER_TEMP/failed.txt"
+              echo '```'
+              echo
+              echo "Fix the anchors on the \`${REF}\` branch, then re-run this workflow."
+            else
+              echo "Running \`scripts/prepare-source.sh\` on the new release failed before any patch was tried."
+            fi
+          } > "$RUNNER_TEMP/body.md"
+          existing="$(gh issue list --repo "$REPOSITORY" --state open \
+            --search "${title} in:title" --json number --jq '.[0].number' || true)"
+          if [[ -n "$existing" ]]; then
+            gh issue comment "$existing" --repo "$REPOSITORY" --body-file "$RUNNER_TEMP/body.md"
+          else
+            gh issue create --repo "$REPOSITORY" --title "$title" --body-file "$RUNNER_TEMP/body.md"
+          fi
