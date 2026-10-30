@@ -101,7 +101,7 @@ rename to target/linux/airoha/dts/an7581-evb-emmc.dtsi
 index d78bbb1bd22..e5044a00fed 100644
 --- a/target/linux/airoha/dts/an7581-evb-emmc.dts
 +++ b/target/linux/airoha/dts/an7581-evb-emmc.dtsi
-@@ -1,33 +1,9 @@
+@@ -1,37 +1,13 @@
  // SPDX-License-Identifier: (GPL-2.0-only OR BSD-2-Clause)
  /dts-v1/;
  
@@ -132,6 +132,10 @@ index d78bbb1bd22..e5044a00fed 100644
 -	};
 -};
 -
+ &afe {
+ 	status = "okay";
+ };
+ 
  &sound {
  	audio-routing = "Headphone", "HP_L",
  			"Headphone", "HP_R",

@@ -499,7 +499,7 @@ index b2e5a6fc529..2064e08cd76 100644
  	buffalo,wsr-6000ax8|\
  	cudy,wr3000h-v1|\
  	cudy,wr3000p-v1|\
-@@ -258,13 +301,6 @@ platform_do_upgrade() {
+@@ -258,14 +301,6 @@ platform_do_upgrade() {
  			;;
  		esac
  		;;
@@ -508,6 +508,7 @@ index b2e5a6fc529..2064e08cd76 100644
 -	xiaomi,redmi-router-ax6000-stock)
 -		CI_KERN_UBIPART=ubi_kernel
 -		CI_ROOT_UBIPART=ubi
+-		CI_DATA_UBIPART=ubi
 -		nand_do_upgrade "$1"
 -		;;
  	*)

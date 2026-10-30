@@ -510,6 +510,6 @@ index 5115f5775db..63ac7f94075 100644
 +endef
 +TARGET_DEVICES += tenda_be12-pro
 +
- define Device/totolink_x6000r
-   DEVICE_VENDOR := TOTOLINK
-   DEVICE_MODEL := X6000R
+ define Device/teralink_tl3020-256mb
+   DEVICE_VENDOR := Teralink
+   DEVICE_MODEL := TL3020

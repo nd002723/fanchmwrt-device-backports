@@ -157,10 +157,11 @@ diff --git a/package/boot/uboot-tools/uboot-envtools/files/mediatek_filogic b/pa
 index 36ef0419e1f..b84e1889652 100644
 --- a/package/boot/uboot-tools/uboot-envtools/files/mediatek_filogic
 +++ b/package/boot/uboot-tools/uboot-envtools/files/mediatek_filogic
-@@ -54,6 +54,7 @@ qihoo,360t7-ubi|\
+@@ -54,7 +54,8 @@ qihoo,360t7-ubi|\
  routerich,ax3000-ubootmod|\
  routerich,be7200|\
  snr,snr-cpe-ax2|\
+ teralink,tl3020-256mb|\
 +tplink,be450-ubi|\
  tplink,tl-xdr4288|\
  tplink,tl-xdr6086|\
@@ -1133,18 +1134,20 @@ diff --git a/target/linux/mediatek/filogic/base-files/lib/upgrade/platform.sh b/
 index 5c8d165da42..1588f295470 100644
 --- a/target/linux/mediatek/filogic/base-files/lib/upgrade/platform.sh
 +++ b/target/linux/mediatek/filogic/base-files/lib/upgrade/platform.sh
-@@ -178,6 +178,7 @@ platform_do_upgrade() {
+@@ -178,7 +178,8 @@ platform_do_upgrade() {
  	routerich,ax3000-ubootmod|\
  	routerich,be7200|\
  	snr,snr-cpe-ax2|\
+ 	teralink,tl3020-256mb|\
 +	tplink,be450-ubi|\
  	tplink,tl-xdr4288|\
  	tplink,tl-xdr6086|\
  	tplink,tl-xdr6088|\
-@@ -415,6 +416,7 @@ platform_check_image() {
+@@ -415,7 +416,8 @@ platform_check_image() {
  	qihoo,360t7|\
  	qihoo,360t7-ubi|\
  	routerich,ax3000-ubootmod|\
+ 	teralink,tl3020-256mb|\
 +	tplink,be450-ubi|\
  	tplink,tl-xdr4288|\
  	tplink,tl-xdr6086|\

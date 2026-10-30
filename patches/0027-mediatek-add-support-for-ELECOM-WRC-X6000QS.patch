@@ -638,9 +638,9 @@ index 2064e08cd76..0410ccc0745 100644
 +		[ -z "$delay" ] || [ "$delay" -eq "0" ] && \
 +			fw_setenv bootmenu_delay 3
 +		;;
- 	xiaomi,mi-router-ax3000t|\
- 	xiaomi,mi-router-wr30u-stock|\
- 	xiaomi,redmi-router-ax6000-stock)
+ 	jiorouter,ax6000-jidu6101|\
+ 	jiorouter,ax6000-jidu6j01)
+ 		jiorouter_initial_setup
 diff --git a/target/linux/mediatek/image/filogic.mk b/target/linux/mediatek/image/filogic.mk
 index a4e81249a82..b4969f87c1a 100644
 --- a/target/linux/mediatek/image/filogic.mk
