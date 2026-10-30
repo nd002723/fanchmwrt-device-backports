@@ -176,7 +176,7 @@ index 9fca8edc1d8..6b5d14b234d 100644
  		# DO NOT set CI_KERNPART to part.safe,
 diff --git a/target/linux/ipq40xx/files-6.12/arch/arm/boot/dts/qcom/qcom-ipq4029-mr70.dts b/target/linux/ipq40xx/files-6.12/arch/arm/boot/dts/qcom/qcom-ipq4029-mr70.dts
 new file mode 100644
-index 00000000000..eb7053a25bc
+index 00000000000..0000000000
 --- /dev/null
 +++ b/target/linux/ipq40xx/files-6.12/arch/arm/boot/dts/qcom/qcom-ipq4029-mr70.dts
 @@ -0,0 +1,9 @@
