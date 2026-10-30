@@ -1,0 +1,18 @@
+diff --git a/package/firmware/ipq-wifi/Makefile b/package/firmware/ipq-wifi/Makefile
+index 3c09be2..9a71bc1 100644
+--- a/package/firmware/ipq-wifi/Makefile
++++ b/package/firmware/ipq-wifi/Makefile
+@@ -13,6 +13,13 @@ PKG_FLAGS:=nonshared
+ 
+ include $(INCLUDE_DIR)/package.mk
+ 
++# Board files kept in ./files are copied into the build dir so the
++# per-device install-overlay rules above can pick them up.
++define Build/Prepare
++	$(call Build/Prepare/Default)
++	$(if $(wildcard ./files/*),$(CP) ./files/* $(PKG_BUILD_DIR)/)
++endef
++
+ define Build/Compile
+ endef
+ 
