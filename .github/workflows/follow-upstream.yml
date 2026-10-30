@@ -13,6 +13,7 @@ on:
 
 permissions:
   contents: write
+  pull-requests: write
 
 concurrency:
   group: follow-upstream
@@ -110,10 +111,25 @@ jobs:
             echo "::warning::prepare-source.sh failed on ${{ steps.upstream.outputs.ref }}"
             exit 0
           fi
+          mkdir -p "$RUNNER_TEMP/repaired"
           failed=""
+          repaired=""
           for patch in patches/*.patch; do
-            if ! git -C upstream apply --whitespace=nowarn "${PWD}/${patch}" 2>/dev/null; then
-              failed="${failed} $(basename "$patch")"
+            name="$(basename "$patch")"
+            if git -C upstream apply --check --whitespace=nowarn "${PWD}/${patch}" 2>/dev/null; then
+              git -C upstream apply --whitespace=nowarn "${PWD}/${patch}"
+              continue
+            fi
+            candidate="$RUNNER_TEMP/repaired/${name}"
+            if python3 scripts/repair-patch-anchors.py \
+                --patch "$patch" --source upstream --output "$candidate" \
+                --report "$RUNNER_TEMP/repaired/${name%.patch}.report" >/dev/null 2>&1 &&
+                git -C upstream apply --check --whitespace=nowarn "$candidate" 2>/dev/null; then
+              git -C upstream apply --whitespace=nowarn "$candidate"
+              cp -- "$candidate" "$patch"
+              repaired="${repaired} ${name%.patch}"
+            else
+              failed="${failed} ${name}"
             fi
           done
           if [[ -n "$failed" ]]; then
@@ -123,7 +139,12 @@ jobs:
             echo "::warning::Patches that do not apply on ${{ steps.upstream.outputs.ref }}:${failed}"
           else
             echo "ok=1" >> "$GITHUB_OUTPUT"
-            echo "All patches apply on ${{ steps.upstream.outputs.ref }}."
+            echo "repaired=${repaired# }" >> "$GITHUB_OUTPUT"
+            if [[ -n "$repaired" ]]; then
+              echo "::notice::Re-anchored patches:${repaired}"
+            else
+              echo "All patches apply on ${{ steps.upstream.outputs.ref }}."
+            fi
           fi
 
       - name: Publish the branch
@@ -135,13 +156,19 @@ jobs:
           set -euo pipefail
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          git checkout -B "$REF" origin/main
+          # Branch off the commit already checked out: the default branch, with any
+          # re-anchored patch edits still in the working tree.
+          git checkout -B "$REF"
           python3 -c "import json,sys,pathlib; p=pathlib.Path('manifest.json'); m=json.loads(p.read_text(encoding='utf-8')); m['fanchmwrt'].update(base_commit=sys.argv[2], ref=sys.argv[1]); p.write_text(json.dumps(m, indent=2, ensure_ascii=False)+chr(10), encoding='utf-8')" "$REF" "$COMMIT"
-          git add manifest.json
+          git add manifest.json patches
           if git diff --cached --quiet; then
-            echo "manifest.json already targets ${COMMIT}; ${REF} will point at main."
+            echo "manifest.json already targets ${COMMIT}; ${REF} will point at ${{ github.event.repository.default_branch }}."
           else
-            git commit -m "Follow ${REF}: ${COMMIT}"
+            if [[ -n "${{ steps.trial.outputs.repaired }}" ]]; then
+              git commit -m "Follow ${REF}: ${COMMIT}" -m "Re-anchored patches: ${{ steps.trial.outputs.repaired }}"
+            else
+              git commit -m "Follow ${REF}: ${COMMIT}"
+            fi
           fi
           git push --force-with-lease origin "refs/heads/${REF}"
           {
@@ -149,6 +176,40 @@ jobs:
             echo
             echo "The builder picks it up automatically: \`upstream_ref: ${REF}\` now resolves to this branch."
           } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Open a review pull request for the re-anchored patches
+        if: steps.trial.outputs.ok == '1' && steps.trial.outputs.repaired != ''
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REF: ${{ steps.upstream.outputs.ref }}
+          REPAIRED: ${{ steps.trial.outputs.repaired }}
+          BASE_BRANCH: ${{ github.event.repository.default_branch }}
+        run: |
+          set -euo pipefail
+          body="$RUNNER_TEMP/review.md"
+          {
+            echo "## ${REF} needed re-anchored patches"
+            echo
+            echo "The scheduled follow-up published \`${REF}\`, but these patches did not apply as written."
+            echo "Their hunk context was re-read from the new upstream tree; added and removed lines are untouched."
+            echo
+            for name in $REPAIRED; do
+              echo "### \`${name}\`"
+              echo
+              echo '```'
+              cat "$RUNNER_TEMP/repaired/${name}.report" 2>/dev/null || echo "(no notes)"
+              echo '```'
+              echo
+            done
+            echo "Review the patch diff above before relying on the branch. Closing this pull request does not delete the branch."
+          } > "$body"
+          if gh pr list --repo "$GITHUB_REPOSITORY" --head "$REF" --state open --json number --jq '.[0].number' | grep -q .; then
+            echo "A review pull request for ${REF} is already open."
+          else
+            gh pr create --repo "$GITHUB_REPOSITORY" --head "$REF" --base "$BASE_BRANCH" \
+              --title "Review the re-anchored patch set for ${REF}" --body-file "$body" \
+              || echo "::warning::Could not open the pull request for ${REF}."
+          fi
 
       - name: Report a release the patch set cannot follow yet
         if: steps.state.outputs.follows != '1' && steps.trial.outputs.ok == '0'
