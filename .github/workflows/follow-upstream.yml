@@ -5,6 +5,11 @@ on:
     # Every day at 03:30 UTC, an hour before the builder's own sync.
     - cron: '30 3 * * *'
   workflow_dispatch:
+    inputs:
+      ref:
+        description: Release tag to follow instead of the newest one
+        required: false
+        type: string
 
 permissions:
   contents: write
@@ -26,12 +31,16 @@ jobs:
         id: upstream
         env:
           UPSTREAM_REPOSITORY: fanchmwrt/fanchmwrt
+          REQUESTED_REF: ${{ inputs.ref }}
         run: |
           set -euo pipefail
-          tags="$(git ls-remote --tags --refs "https://github.com/${UPSTREAM_REPOSITORY}.git" \
-            | awk '{print $2}' | sed 's|^refs/tags/||' \
-            | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | sort -V || true)"
-          ref="$(printf '%s\n' "$tags" | tail -1)"
+          ref="${REQUESTED_REF}"
+          if [[ -z "$ref" ]]; then
+            tags="$(git ls-remote --tags --refs "https://github.com/${UPSTREAM_REPOSITORY}.git" \
+              | awk '{print $2}' | sed 's|^refs/tags/||' \
+              | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | sort -V || true)"
+            ref="$(printf '%s\n' "$tags" | tail -1)"
+          fi
           if [[ -z "$ref" ]]; then
             echo "::error::No release tag found for ${UPSTREAM_REPOSITORY}"
             exit 1
