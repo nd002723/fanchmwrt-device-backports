@@ -403,9 +403,9 @@ diff --git a/target/linux/mediatek/image/filogic.mk b/target/linux/mediatek/imag
 index afa51e5fd0e..03411d43ff8 100644
 --- a/target/linux/mediatek/image/filogic.mk
 +++ b/target/linux/mediatek/image/filogic.mk
-@@ -1909,6 +1909,19 @@ endef
- 
- TARGET_DEVICES += h3c_magic-nx30-pro-stock
+@@ -1909,5 +1909,19 @@ endef
+ endef
+ TARGET_DEVICES += h3c_magic-nx30-pro
  
 +define Device/hiveton_h5000m
 +  DEVICE_VENDOR := Hiveton
@@ -420,6 +420,6 @@ index afa51e5fd0e..03411d43ff8 100644
 +  IMAGE/sysupgrade.bin := sysupgrade-tar | append-metadata
 +endef
 +TARGET_DEVICES += hiveton_h5000m
- 
++
  define Device/huasifei_wh3000
    DEVICE_VENDOR := Huasifei

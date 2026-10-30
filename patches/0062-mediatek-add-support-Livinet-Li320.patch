@@ -398,7 +398,7 @@ index 1733536532b..2df4a96cb4b 100644
 --- a/target/linux/mediatek/filogic/base-files/etc/board.d/02_network
 +++ b/target/linux/mediatek/filogic/base-files/etc/board.d/02_network
 @@ -65,6 +65,7 @@ mediatek_setup_interfaces()
- 	jcg,q30-pro-stock|\
+ 	jcg,q30-pro|\
  	keenetic,kn-3711|\
  	keenetic,kn-3811|\
 +	livinet,li320|\

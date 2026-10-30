@@ -387,8 +387,8 @@ index 78f93e6a220..56bc724cbc4 100644
  	globitel,bt-r320|\
 +	huasifei,wh3000r-nand|\
  	jcg,q30-pro|\
- 	jcg,q30-pro-stock|\
  	keenetic,kn-3711|\
+ 	keenetic,kn-3811|\
 diff --git a/target/linux/mediatek/filogic/base-files/lib/upgrade/platform.sh b/target/linux/mediatek/filogic/base-files/lib/upgrade/platform.sh
 index ae781d73e0c..59e020f7dff 100644
 --- a/target/linux/mediatek/filogic/base-files/lib/upgrade/platform.sh

@@ -2,8 +2,8 @@
   "schema_version": 1,
   "fanchmwrt": {
     "repository": "fanchmwrt/fanchmwrt",
-    "base_commit": "75d011a8c317d88e6cf78f89403a349cceff2827",
-    "ref": "fanchmwrt-25.12.4"
+    "base_commit": "ba915c2ee711d047d5be8575c1e98699119429ab",
+    "ref": "v25.12.4"
   },
   "openwrt": {
     "repository": "openwrt/openwrt",
@@ -15,5 +15,5 @@
     "mipsel"
   ],
   "patch_count": 77,
-  "profile_count": 89
+  "profile_count": 77
 }
