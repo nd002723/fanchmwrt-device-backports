@@ -240,7 +240,7 @@ diff --git a/target/linux/airoha/image/an7581.mk b/target/linux/airoha/image/an7
 index 6e1fde16d61..31433db0a82 100644
 --- a/target/linux/airoha/image/an7581.mk
 +++ b/target/linux/airoha/image/an7581.mk
-@@ -32,16 +32,29 @@ define Device/airoha_an7581-evb
+@@ -32,16 +32,30 @@
  endef
  TARGET_DEVICES += airoha_an7581-evb
  
@@ -265,8 +265,9 @@ index 6e1fde16d61..31433db0a82 100644
 +  DEVICE_VENDOR := Airoha
 +  DEVICE_MODEL := AN7581 Evaluation Board (eMMC + Kite)
 +  DEVICE_DTS := an7581-evb-emmc-kite
-+  DEVICE_PACKAGES := kmod-i2c-an7581 airoha-en7581-mt7992-npu-firmware \
-+		    kmod-mt7992-firmware wpad-basic-mbedtls
++  DEVICE_PACKAGES := kmod-i2c-an7581 airoha-en7581-npu-firmware \
++		    kmod-mt7992-firmware airoha-en7581-mt7996-npu-firmware kmod-mt7996-firmware \
++		    wpad-basic-mbedtls
 +  ARTIFACT/preloader.bin := an7581-preloader rfb
 +  ARTIFACT/bl31-uboot.fip := an7581-bl31-uboot rfb
 +  ARTIFACTS := preloader.bin bl31-uboot.fip

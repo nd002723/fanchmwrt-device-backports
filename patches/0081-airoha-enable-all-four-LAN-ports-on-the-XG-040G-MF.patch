@@ -1,0 +1,54 @@
+diff --git a/target/linux/airoha/dts/an7583-nokia_xg-040g-mf-common.dtsi b/target/linux/airoha/dts/an7583-nokia_xg-040g-mf-common.dtsi
+index 6b61d1a..0897e2d 100644
+--- a/target/linux/airoha/dts/an7583-nokia_xg-040g-mf-common.dtsi
++++ b/target/linux/airoha/dts/an7583-nokia_xg-040g-mf-common.dtsi
+@@ -195,11 +195,31 @@
+ 	status = "disabled";
+ };
+ 
++&gsw_port2 {
++	status = "okay";
++
++	label = "lan2";
++};
++
++&gsw_port3 {
++	status = "okay";
++
++	label = "lan3";
++};
++
++&gsw_port4 {
++	status = "okay";
++
++	label = "lan4";
++};
++
+ &gsw_phy1 {
+ 	status = "disabled";
+ };
+ 
+ &gsw_phy2 {
++	status = "okay";
++
+ 	interrupts = <2>;
+ 
+ 	pinctrl-names = "gbe-led";
+@@ -214,6 +234,8 @@
+ };
+ 
+ &gsw_phy3 {
++	status = "okay";
++
+ 	interrupts = <3>;
+ 
+ 	pinctrl-names = "gbe-led";
+@@ -228,6 +250,8 @@
+ };
+ 
+ &gsw_phy4 {
++	status = "okay";
++
+ 	interrupts = <4>;
+ 
+ 	pinctrl-names = "gbe-led";
