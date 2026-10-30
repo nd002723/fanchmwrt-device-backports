@@ -138,7 +138,11 @@ jobs:
           git checkout -B "$REF" origin/main
           python3 -c "import json,sys,pathlib; p=pathlib.Path('manifest.json'); m=json.loads(p.read_text(encoding='utf-8')); m['fanchmwrt'].update(base_commit=sys.argv[2], ref=sys.argv[1]); p.write_text(json.dumps(m, indent=2, ensure_ascii=False)+chr(10), encoding='utf-8')" "$REF" "$COMMIT"
           git add manifest.json
-          git commit -m "Follow ${REF}: ${COMMIT}"
+          if git diff --cached --quiet; then
+            echo "manifest.json already targets ${COMMIT}; ${REF} will point at main."
+          else
+            git commit -m "Follow ${REF}: ${COMMIT}"
+          fi
           git push --force-with-lease origin "refs/heads/${REF}"
           {
             echo "Published branch \`${REF}\` for ${COMMIT}."
