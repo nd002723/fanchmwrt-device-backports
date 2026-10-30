@@ -8,7 +8,6 @@ on:
 
 permissions:
   contents: write
-  issues: write
 
 concurrency:
   group: follow-upstream
@@ -139,18 +138,17 @@ jobs:
           } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Report a release the patch set cannot follow yet
-        if: steps.trial.outputs.ok == '0'
+        if: steps.state.outputs.follows != '1' && steps.trial.outputs.ok == '0'
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           REF: ${{ steps.upstream.outputs.ref }}
           COMMIT: ${{ steps.upstream.outputs.commit }}
           REASON: ${{ steps.trial.outputs.reason }}
-          REPOSITORY: ${{ github.repository }}
         run: |
           set -euo pipefail
-          title="Device backports do not apply to ${REF}"
           {
-            echo "Upstream \`${REF}\` (${COMMIT}) was published, but the patch set on \`main\` does not apply to it yet."
+            echo "## The patch set cannot follow ${REF} yet"
+            echo
+            echo "Upstream \`${REF}\` (${COMMIT}) was published, but the patches on \`main\` do not apply to it."
             echo
             if [[ "$REASON" == "patches" ]]; then
               echo "Patches that failed:"
@@ -158,16 +156,10 @@ jobs:
               echo '```'
               cat "$RUNNER_TEMP/failed.txt"
               echo '```'
-              echo
-              echo "Fix the anchors on the \`${REF}\` branch, then re-run this workflow."
             else
               echo "Running \`scripts/prepare-source.sh\` on the new release failed before any patch was tried."
             fi
-          } > "$RUNNER_TEMP/body.md"
-          existing="$(gh issue list --repo "$REPOSITORY" --state open \
-            --search "${title} in:title" --json number --jq '.[0].number' || true)"
-          if [[ -n "$existing" ]]; then
-            gh issue comment "$existing" --repo "$REPOSITORY" --body-file "$RUNNER_TEMP/body.md"
-          else
-            gh issue create --repo "$REPOSITORY" --title "$title" --body-file "$RUNNER_TEMP/body.md"
-          fi
+            echo
+            echo "Fix the anchors, then re-run this workflow."
+          } >> "$GITHUB_STEP_SUMMARY"
+          exit 1
