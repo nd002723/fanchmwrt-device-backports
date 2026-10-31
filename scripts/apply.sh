@@ -40,10 +40,31 @@ if [[ ! "$base_commit" =~ ^[0-9a-f]{40}$ ]] ||
 	echo "Backport manifest contains invalid compatibility data" >&2
 	exit 1
 fi
+# The series is pinned to one released tag, but it also has to run on the
+# maintenance branch that is built on top of it: fanchmwrt keeps its private
+# layer (fwxd, the luci-app-fwx-* set, the matching feeds.conf entry) on
+# fanchmwrt-<tag>, a branch that only adds to the released tree. Accept the pin
+# itself and any commit that descends from it, because "the branch head moved"
+# must not make every device backport unusable. Being a descendant is not a
+# promise that the patches still fit - each one is checked and applied below,
+# and any failure rolls the whole series back.
 if [[ "$source_commit" != "$base_commit" ]]; then
-	echo "Unsupported FanchmWrt source revision: $source_commit" >&2
-	echo "This patch set requires: $base_commit" >&2
-	exit 1
+	if ! git -C "$source_dir" cat-file -e "${base_commit}^{commit}" 2>/dev/null; then
+		cat >&2 <<-EOF
+		Cannot verify the FanchmWrt source revision: the clone is too shallow
+		  source:        $source_commit
+		  required base: $base_commit
+		Check the upstream source out with full history (actions/checkout
+		"fetch-depth: 0"), or run "git fetch --unshallow" in $source_dir.
+		EOF
+		exit 1
+	fi
+	if ! git -C "$source_dir" merge-base --is-ancestor "$base_commit" "$source_commit" 2>/dev/null; then
+		echo "Unsupported FanchmWrt source revision: $source_commit" >&2
+		echo "This patch set requires $base_commit or a commit that descends from it" >&2
+		exit 1
+	fi
+	echo "Source revision $source_commit descends from the ${base_commit:0:12} baseline"
 fi
 if ! git -C "$source_dir" diff --cached --quiet; then
 	echo "Refusing to apply device backports over staged source changes" >&2

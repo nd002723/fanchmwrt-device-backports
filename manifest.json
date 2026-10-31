@@ -3,7 +3,8 @@
   "fanchmwrt": {
     "repository": "fanchmwrt/fanchmwrt",
     "base_commit": "64900e756efa667774214f9c6b17c113222e01f7",
-    "ref": "v25.12.6"
+    "ref": "v25.12.6",
+    "branch": "fanchmwrt-25.12.6"
   },
   "openwrt": {
     "repository": "openwrt/openwrt",

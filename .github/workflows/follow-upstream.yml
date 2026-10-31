@@ -159,7 +159,7 @@ jobs:
           # Branch off the commit already checked out: the default branch, with any
           # re-anchored patch edits still in the working tree.
           git checkout -B "$REF"
-          python3 -c "import json,sys,pathlib; p=pathlib.Path('manifest.json'); m=json.loads(p.read_text(encoding='utf-8')); m['fanchmwrt'].update(base_commit=sys.argv[2], ref=sys.argv[1]); p.write_text(json.dumps(m, indent=2, ensure_ascii=False)+chr(10), encoding='utf-8')" "$REF" "$COMMIT"
+          python3 -c "import json,sys,pathlib; p=pathlib.Path('manifest.json'); m=json.loads(p.read_text(encoding='utf-8')); m['fanchmwrt'].update(base_commit=sys.argv[2], ref=sys.argv[1], branch='fanchmwrt-' + sys.argv[1]); p.write_text(json.dumps(m, indent=2, ensure_ascii=False)+chr(10), encoding='utf-8')" "$REF" "$COMMIT"
           git add manifest.json patches
           if git diff --cached --quiet; then
             echo "manifest.json already targets ${COMMIT}; ${REF} will point at ${{ github.event.repository.default_branch }}."
