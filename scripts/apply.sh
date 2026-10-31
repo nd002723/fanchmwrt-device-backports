@@ -40,10 +40,31 @@ if [[ ! "$base_commit" =~ ^[0-9a-f]{40}$ ]] ||
 	echo "Backport manifest contains invalid compatibility data" >&2
 	exit 1
 fi
+# The series is pinned to one released tag, but it also has to run on the
+# maintenance branch that is built on top of it: fanchmwrt keeps its private
+# layer (fwxd, the luci-app-fwx-* set, the matching feeds.conf entry) on
+# fanchmwrt-<tag>, a branch that only adds to the released tree. Accept the pin
+# itself and any commit that descends from it, because "the branch head moved"
+# must not make every device backport unusable. Being a descendant is not a
+# promise that the patches still fit - each one is checked and applied below,
+# and any failure rolls the whole series back.
 if [[ "$source_commit" != "$base_commit" ]]; then
-	echo "Unsupported FanchmWrt source revision: $source_commit" >&2
-	echo "This patch set requires: $base_commit" >&2
-	exit 1
+	if ! git -C "$source_dir" cat-file -e "${base_commit}^{commit}" 2>/dev/null; then
+		cat >&2 <<-EOF
+		Cannot verify the FanchmWrt source revision: the clone is too shallow
+		  source:        $source_commit
+		  required base: $base_commit
+		Check the upstream source out with full history (actions/checkout
+		"fetch-depth: 0"), or run "git fetch --unshallow" in $source_dir.
+		EOF
+		exit 1
+	fi
+	if ! git -C "$source_dir" merge-base --is-ancestor "$base_commit" "$source_commit" 2>/dev/null; then
+		echo "Unsupported FanchmWrt source revision: $source_commit" >&2
+		echo "This patch set requires $base_commit or a commit that descends from it" >&2
+		exit 1
+	fi
+	echo "Source revision $source_commit descends from the ${base_commit:0:12} baseline"
 fi
 if ! git -C "$source_dir" diff --cached --quiet; then
 	echo "Refusing to apply device backports over staged source changes" >&2
@@ -58,12 +79,35 @@ if (( ${#patches[@]} != expected_count )); then
 	exit 1
 fi
 
+# A maintenance branch reworks the very board lists these patches touch (extra
+# device names in 02_network, extra cases in 11_fix_wifi_mac), so the context
+# drifts by a line or two and git apply refuses a patch that is still perfectly
+# meaningful. GNU patch tolerates that drift through bounded fuzz. Only enable it
+# when the series runs on such a descendant: on the pinned tag the patches must
+# still match exactly, and a failure there stays a hard failure.
+fuzz_limit=0
+if [[ "$source_commit" != "$base_commit" ]]; then
+	fuzz_limit=3
+fi
+
 applied=()
+loosened=0
 rollback() {
-	local index
+	local index entry method patch
 	trap - ERR INT TERM
 	for (( index=${#applied[@]} - 1; index >= 0; index-- )); do
-		git -C "$source_dir" apply --reverse "${applied[index]}" || true
+		entry="${applied[index]}"
+		method="${entry%%:*}"
+		patch="${entry#*:}"
+		if [[ "$method" == git ]]; then
+			git -C "$source_dir" apply --reverse "$patch" || true
+		else
+			(
+				cd "$source_dir" &&
+					patch -p1 --reverse --forward --no-backup-if-mismatch \
+						--fuzz="${method#fuzz}" --silent <"$patch"
+			) || true
+		fi
 	done
 }
 abort_apply() {
@@ -75,11 +119,48 @@ abort_apply() {
 trap abort_apply ERR INT TERM
 
 for patch in "${patches[@]}"; do
-	echo "Applying ${patch##*/}"
-	git -C "$source_dir" apply --check --whitespace=nowarn "$patch"
-	git -C "$source_dir" apply --whitespace=nowarn "$patch"
-	applied+=("$patch")
+	name="${patch##*/}"
+	echo "Applying $name"
+	if git -C "$source_dir" apply --check --whitespace=nowarn "$patch" 2>/dev/null; then
+		git -C "$source_dir" apply --whitespace=nowarn "$patch"
+		applied+=("git:$patch")
+		continue
+	fi
+	if (( fuzz_limit == 0 )); then
+		# Report git's own diagnosis, then let the ERR trap roll the series back.
+		git -C "$source_dir" apply --check --whitespace=nowarn "$patch"
+		git -C "$source_dir" apply --whitespace=nowarn "$patch"
+	fi
+
+	matched=0
+	for fuzz in $(seq 1 "$fuzz_limit"); do
+		if (
+			cd "$source_dir" &&
+				patch -p1 --fuzz="$fuzz" --forward --no-backup-if-mismatch \
+					--dry-run --silent <"$patch" >/dev/null 2>&1
+		); then
+			if (
+				cd "$source_dir" &&
+					patch -p1 --fuzz="$fuzz" --forward --no-backup-if-mismatch \
+						--silent <"$patch"
+			); then
+				echo "  context loosened: fuzz $fuzz"
+				applied+=("fuzz${fuzz}:$patch")
+				loosened=$(( loosened + 1 ))
+				matched=1
+				break
+			fi
+		fi
+	done
+	if (( matched == 0 )); then
+		echo "Cannot apply $name even with fuzz $fuzz_limit" >&2
+		false
+	fi
 done
 
 trap - ERR INT TERM
 echo "Applied ${#patches[@]} device backports to $source_commit"
+if (( loosened > 0 )); then
+	echo "Notice: $loosened of ${#patches[@]} patches needed bounded fuzz because the" \
+		"source revision reworks the same board lists"
+fi
