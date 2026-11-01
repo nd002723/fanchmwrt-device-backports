@@ -224,16 +224,29 @@ jobs:
           # Point the fallback ref at the same commit. A force is required because
           # the default branch cannot fast-forward onto a re-based release branch,
           # and this workflow owns both refs.
-          if [[ "$(git ls-remote --heads origin "refs/heads/${DEFAULT_BRANCH}" | cut -f1)" \
-                != "$(git rev-parse HEAD)" ]]; then
-            git push --force origin "HEAD:refs/heads/${DEFAULT_BRANCH}"
+          #
+          # The default branch must NOT be a release ref. It is force-pushed on
+          # every release, so a default named after a version would be rewritten
+          # to carry a different release's patches while keeping the old name --
+          # and anyone who pinned `upstream_ref: v25.12.6` would silently receive
+          # the newer series. Refuse, and say how to fix it.
+          fallback_note=""
+          if [[ "$DEFAULT_BRANCH" =~ ^v[0-9] ]]; then
+            echo "::warning title=Unsafe default branch::${DEFAULT_BRANCH} is named after a release, so it is not refreshed. Set the repository default branch to \`main\` (Settings -> Branches); a pinned \`${DEFAULT_BRANCH}\` must keep its own release content."
+            fallback_note="\`${DEFAULT_BRANCH}\` is named after a release and was left alone; rename the default branch to \`main\` so the fallback path can follow releases."
+          else
+            if [[ "$(git ls-remote --heads origin "refs/heads/${DEFAULT_BRANCH}" | cut -f1)" \
+                  != "$(git rev-parse HEAD)" ]]; then
+              git push --force origin "HEAD:refs/heads/${DEFAULT_BRANCH}"
+            fi
+            fallback_note="\`${DEFAULT_BRANCH}\` points at the same commit, so the fallback path matches it too."
           fi
 
           {
             echo "Published \`${REF}\` for ${COMMIT} (${committed} new commit(s))."
             echo
             echo "The builder picks it up automatically: \`upstream_ref: ${REF}\` now resolves to this branch."
-            echo "\`${DEFAULT_BRANCH}\` points at the same commit, so the fallback path matches it too."
+            echo "${fallback_note}"
           } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Open a review pull request for the re-anchored patches
