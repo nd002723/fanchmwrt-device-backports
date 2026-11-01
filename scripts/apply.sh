@@ -159,6 +159,20 @@ for patch in "${patches[@]}"; do
 done
 
 trap - ERR INT TERM
+
+# A partially applied series is worse than a refused one: the tree looks patched
+# but a hunk is missing, and the builder would compile it. GNU patch leaves these
+# behind when a later hunk of a file section fails after an earlier one applied,
+# so clean up by rolling the whole series back and failing loudly.
+leftovers="$(cd "$source_dir" && find . -name '*.rej' -o -name '*.orig' | head -n 20)"
+if [[ -n "$leftovers" ]]; then
+	echo "Patch application left rejected hunks behind:" >&2
+	printf '%s\n' "$leftovers" >&2
+	rollback
+	(cd "$source_dir" && printf '%s\n' "$leftovers" | xargs -r rm -f --)
+	exit 1
+fi
+
 echo "Applied ${#patches[@]} device backports to $source_commit"
 if (( loosened > 0 )); then
 	echo "Notice: $loosened of ${#patches[@]} patches needed bounded fuzz because the" \

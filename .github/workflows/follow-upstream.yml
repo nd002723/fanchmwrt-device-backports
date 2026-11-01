@@ -63,6 +63,7 @@ jobs:
         env:
           REF: ${{ steps.upstream.outputs.ref }}
           COMMIT: ${{ steps.upstream.outputs.commit }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
         run: |
           set -euo pipefail
           if ! git ls-remote --exit-code --heads origin "refs/heads/${REF}" >/dev/null 2>&1; then
@@ -75,9 +76,24 @@ jobs:
           base="$(git show "origin/${REF}:manifest.json" \
             | python3 -c 'import json,sys; print(json.load(sys.stdin)["fanchmwrt"]["base_commit"])')"
           echo "exists=1" >> "$GITHUB_OUTPUT"
-          if [[ "$base" == "$COMMIT" ]]; then
+          # The fallback ref has to follow too. Recommending a release whose
+          # branch is current while the default branch still names an older base
+          # is exactly the state that made the builder's fallback path fail.
+          default_follows=0
+          if git fetch --quiet origin "refs/heads/${DEFAULT_BRANCH}:refs/remotes/origin/${DEFAULT_BRANCH}" 2>/dev/null; then
+            default_base="$(git show "origin/${DEFAULT_BRANCH}:manifest.json" 2>/dev/null \
+              | python3 -c 'import json,sys; print(json.load(sys.stdin)["fanchmwrt"]["base_commit"])' 2>/dev/null || echo "")"
+            if [[ "$default_base" == "$COMMIT" ]]; then
+              default_follows=1
+            fi
+          fi
+          echo "default_follows=${default_follows}" >> "$GITHUB_OUTPUT"
+          if [[ "$base" == "$COMMIT" && "$default_follows" == "1" ]]; then
             echo "follows=1" >> "$GITHUB_OUTPUT"
-            echo "Branch ${REF} already targets ${COMMIT}."
+            echo "Branch ${REF} and ${DEFAULT_BRANCH} already target ${COMMIT}."
+          elif [[ "$base" == "$COMMIT" ]]; then
+            echo "follows=0" >> "$GITHUB_OUTPUT"
+            echo "Branch ${REF} targets ${COMMIT} but ${DEFAULT_BRANCH} does not; refreshing the fallback."
           else
             echo "follows=0" >> "$GITHUB_OUTPUT"
             echo "Branch ${REF} targets ${base}, expected ${COMMIT}."
@@ -114,10 +130,28 @@ jobs:
           mkdir -p "$RUNNER_TEMP/repaired"
           failed=""
           repaired=""
+          # Accept the same bounded fuzz scripts/apply.sh accepts. The trial used
+          # to demand an exact match while the builder tolerated one to three
+          # drifted context lines, so a patch the builder would apply could fail
+          # the trial and block a release that was actually fine.
           for patch in patches/*.patch; do
             name="$(basename "$patch")"
             if git -C upstream apply --check --whitespace=nowarn "${PWD}/${patch}" 2>/dev/null; then
               git -C upstream apply --whitespace=nowarn "${PWD}/${patch}"
+              continue
+            fi
+            loosened=0
+            for fuzz in 1 2 3; do
+              if ( cd upstream && patch -p1 --fuzz="$fuzz" --forward --no-backup-if-mismatch \
+                  --dry-run --silent <"${OLDPWD}/${patch}" >/dev/null 2>&1 ); then
+                ( cd upstream && patch -p1 --fuzz="$fuzz" --forward --no-backup-if-mismatch \
+                    --silent <"${OLDPWD}/${patch}" >/dev/null )
+                loosened="$fuzz"
+                break
+              fi
+            done
+            if (( loosened > 0 )); then
+              echo "::notice::${name} applied with fuzz ${loosened}"
               continue
             fi
             candidate="$RUNNER_TEMP/repaired/${name}"
@@ -147,34 +181,59 @@ jobs:
             fi
           fi
 
-      - name: Publish the branch
+      # `main` is the ref a builder falls back to whenever the per-release branch
+      # is missing, and the manifest on it is what tells the builder whether the
+      # patch set matches the requested commit. It used to be created once and
+      # never advanced, so every release after the first left `main` pinned to a
+      # stale base: the fallback then loaded the previous patch set and
+      # scripts/apply.sh rejected the build. Publishing both refs in one step
+      # keeps them from disagreeing.
+      - name: Publish the release branch and the default branch
         if: steps.trial.outputs.ok == '1'
         env:
           REF: ${{ steps.upstream.outputs.ref }}
           COMMIT: ${{ steps.upstream.outputs.commit }}
+          REPAIRED: ${{ steps.trial.outputs.repaired }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
         run: |
           set -euo pipefail
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          # Branch off the commit already checked out: the default branch, with any
-          # re-anchored patch edits still in the working tree.
-          git checkout -B "$REF"
-          python3 -c "import json,sys,pathlib; p=pathlib.Path('manifest.json'); m=json.loads(p.read_text(encoding='utf-8')); m['fanchmwrt'].update(base_commit=sys.argv[2], ref=sys.argv[1], branch='fanchmwrt-' + sys.argv[1]); p.write_text(json.dumps(m, indent=2, ensure_ascii=False)+chr(10), encoding='utf-8')" "$REF" "$COMMIT"
+
+          # The working tree already carries the re-anchored patches, so both refs
+          # are built from the same content. scripts/write-manifest.py recomputes
+          # patch_count from the files that are actually there.
+          python3 scripts/write-manifest.py --ref "$REF" --commit "$COMMIT" --patches patches
           git add manifest.json patches
-          if git diff --cached --quiet; then
-            echo "manifest.json already targets ${COMMIT}; ${REF} will point at ${{ github.event.repository.default_branch }}."
-          else
-            if [[ -n "${{ steps.trial.outputs.repaired }}" ]]; then
-              git commit -m "Follow ${REF}: ${COMMIT}" -m "Re-anchored patches: ${{ steps.trial.outputs.repaired }}"
+
+          committed=0
+          if ! git diff --cached --quiet; then
+            git checkout -B "$REF"
+            if [[ -n "$REPAIRED" ]]; then
+              git commit -m "Follow ${REF}: ${COMMIT}" -m "Re-anchored patches: ${REPAIRED}"
             else
               git commit -m "Follow ${REF}: ${COMMIT}"
             fi
+            committed=1
+          else
+            echo "::notice::manifest.json already targets ${COMMIT}; reusing the existing tree."
+            git checkout -B "$REF"
           fi
           git push --force-with-lease origin "refs/heads/${REF}"
+
+          # Point the fallback ref at the same commit. A force is required because
+          # the default branch cannot fast-forward onto a re-based release branch,
+          # and this workflow owns both refs.
+          if [[ "$(git ls-remote --heads origin "refs/heads/${DEFAULT_BRANCH}" | cut -f1)" \
+                != "$(git rev-parse HEAD)" ]]; then
+            git push --force origin "HEAD:refs/heads/${DEFAULT_BRANCH}"
+          fi
+
           {
-            echo "Published branch \`${REF}\` for ${COMMIT}."
+            echo "Published \`${REF}\` for ${COMMIT} (${committed} new commit(s))."
             echo
             echo "The builder picks it up automatically: \`upstream_ref: ${REF}\` now resolves to this branch."
+            echo "\`${DEFAULT_BRANCH}\` points at the same commit, so the fallback path matches it too."
           } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Open a review pull request for the re-anchored patches
