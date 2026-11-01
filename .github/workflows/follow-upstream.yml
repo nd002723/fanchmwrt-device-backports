@@ -2,8 +2,11 @@ name: Follow upstream releases
 
 on:
   schedule:
-    # Every day at 03:30 UTC, an hour before the builder's own sync.
-    - cron: '30 3 * * *'
+    # Every day at 01:30 UTC, before the builder's own sync at 02:23 UTC: the
+    # builder documents the release it finds, so it has to see the branch this
+    # workflow publishes, not yesterday's. Running after it left a whole day
+    # where the device lists advertised a patch set the builder refused.
+    - cron: '30 1 * * *'
   workflow_dispatch:
     inputs:
       ref:
