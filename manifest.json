@@ -12,7 +12,6 @@
   },
   "architectures": [
     "arm",
-    "aarch64",
     "mipsel"
   ],
   "patch_count": 55,

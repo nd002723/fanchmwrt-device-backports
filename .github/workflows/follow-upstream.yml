@@ -207,6 +207,10 @@ jobs:
           # are built from the same content. scripts/write-manifest.py recomputes
           # patch_count from the files that are actually there.
           python3 scripts/write-manifest.py --ref "$REF" --commit "$COMMIT" --patches patches
+          # Refuse to publish a manifest that contradicts itself. write-manifest only
+          # rewrites the fields it owns, so a hand edit to `architectures` (a value the
+          # builder never sends, say) would otherwise ride along unnoticed.
+          python3 scripts/write-manifest.py --check
           git add manifest.json patches
 
           committed=0
